@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Android Auto Maker</string>
+    <string name="intro_title">Show an app on Android Auto</string>
+    <string name="intro_body">Choose an APK, an XAPK, or an installed app, then save or install the result.</string>
+    <string name="choose_file">Choose an APK or XAPK</string>
+    <string name="choose_installed">Choose an installed app</string>
+    <string name="clear_file">Remove file</string>
+    <string name="convert">Create Android Auto package</string>
+    <string name="changes_title">Before you install</string>
+    <string name="kind_title">Choose one</string>
+    <string name="kind_game">Parked game\nAvailable while the car is parked.</string>
+    <string name="rename_package">Add .patched to the package name\nInstalls next to the original app.</string>
+    <string name="gamepad">Add gamepad\nDeclares optional controller support.</string>
+    <string name="installed_title">Installed apps</string>
+    <string name="installed_search">Search apps</string>
+    <string name="installed_empty">No installed apps were found.</string>
+    <string name="kind_navigation">Navigation (needs Shizuku)\nThe patched app uses Shizuku to open its screen in Android Auto.</string>
+    <string name="change_game_title">Parked game.</string>
+    <string name="change_game_body">Available while the car is parked.</string>
+    <string name="change_phone_title">Uninstall the original app first.</string>
+    <string name="change_phone_side">Installs next to the original app.</string>
+    <string name="change_navigation_title">Navigation.</string>
+    <string name="change_navigation_body">Available while driving.</string>
+    <string name="driving_note">The patched app uses Shizuku to open its screen in Android Auto.</string>
+    <string name="parked_note">A parked game needs a phone on Android 15 or newer.</string>
+    <bool name="offers_navigation">false</bool>
+    <string name="install_note">Uninstall the original app first.</string>
+    <string name="install_note_side">The patched package can stay installed beside the original.</string>
+    <string name="extract_progress">Extracting %1$d%%</string>
+    <string name="phase_progress">%1$s %2$d%%</string>
+    <string name="still_working">Don\'t worry, it\'s not stuck.</string>
+    <string name="show_log">Show log</string>
+    <string name="hide_log">Hide log</string>
+    <string name="install_now">Install</string>
+    <string name="install_opened">Complete the installer on the phone.</string>
+    <string name="install_done">Installed on the phone.</string>
+    <string name="install_waiting">Installing</string>
+    <string name="install_missing">The app was not installed.</string>
+    <string name="install_cancelled">Installation was cancelled. You can still save the APK.</string>
+    <string name="sessions_title">Sessions</string>
+    <string name="donation_title">Support development</string>
+    <string name="donation_body">A donation of €4 or more supports development of Android Auto Maker. VAT is added where it applies.</string>
+    <string name="donation_skip">No donation</string>
+    <string name="donation_yes">Donate</string>
+    <string name="donation_cancelled">The donation was not completed. The package is still being created.</string>
+</resources>
