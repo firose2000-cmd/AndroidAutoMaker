@@ -2,6 +2,9 @@ package com.automaker.app.install
 
 /** Never let an uploaded archive choose another application's privileged storage destination. */
 object InstallPolicy {
+    fun shizukuAuthorized(userApproved: Boolean, binderAvailable: Boolean, permissionGranted: Boolean): Boolean =
+        userApproved && binderAvailable && permissionGranted
+
     private val packageNamePattern = Regex("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_]+)+")
     private val safePath = Regex("[A-Za-z0-9_./-]+")
 

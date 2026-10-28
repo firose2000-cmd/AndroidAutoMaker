@@ -5,6 +5,16 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class InstallPolicyTest {
+    @Test fun requiresExplicitConsentLiveBinderAndShizukuGrant() {
+        for (consent in listOf(false, true)) {
+            for (binder in listOf(false, true)) {
+                for (grant in listOf(false, true)) {
+                    assertEquals(consent && binder && grant, InstallPolicy.shizukuAuthorized(consent, binder, grant))
+                }
+            }
+        }
+    }
+
     @Test fun allowsOnlySelectedPackageExpansionAndFiles() {
         assertEquals("/sdcard/Android/obb/com.example.maps/main.obb",
             InstallPolicy.sidecarDestination("com.example.maps", "Android/obb/com.example.maps/main.obb"))

@@ -11,18 +11,22 @@ import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 import java.io.File
 
-class AttributedInstaller(private val context: Context) {
+class AttributedInstaller(
+    private val context: Context,
+    private val approvedByUser: Boolean = false,
+) {
     fun shizukuReady(): Boolean {
-        if (!shizukuInstalled()) return false
+        if (!approvedByUser || !shizukuInstalled()) return false
         return try {
-            Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+            InstallPolicy.shizukuAuthorized(approvedByUser, Shizuku.pingBinder(),
+                Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED)
         } catch (_: Throwable) {
             false
         }
     }
 
     fun requestPermission(): Boolean {
-        if (!shizukuInstalled()) return false
+        if (!approvedByUser || !shizukuInstalled()) return false
         return try {
             if (!Shizuku.pingBinder()) return false
             if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) return false
@@ -57,6 +61,7 @@ class AttributedInstaller(private val context: Context) {
 
     @SuppressLint("DiscouragedPrivateApi", "PrivateApi", "BlockedPrivateApi")
     private fun startInstallActivityAsShell(intent: android.content.Intent): Boolean {
+        check(shizukuReady()) { "Explicit installation approval and Shizuku authorization are required." }
         val binder = SystemServiceHelper.getSystemService("activity_task")
             ?: SystemServiceHelper.getSystemService("activity")
             ?: return false

@@ -19,6 +19,13 @@ android {
     }
 
     signingConfigs {
+        create("hardenedTest") {
+            storeFile = file(providers.environmentVariable("AUTOMAKER_RELEASE_TEST_KEYSTORE")
+                .orElse("${System.getProperty("user.home")}/.android/automaker-security-test-release.keystore").get())
+            storePassword = "android"
+            keyAlias = "AndroidDebugKey"
+            keyPassword = "android"
+        }
         create("release") {
             storeFile = rootProject.file("release.keystore")
             storePassword = "automaker"
@@ -52,6 +59,15 @@ android {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
+        }
+        create("hardenedRelease") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isJniDebuggable = false
+            signingConfig = signingConfigs.getByName("hardenedTest")
+            applicationIdSuffix = ".hardenedtestrelease"
+            versionNameSuffix = "-security-test-release"
+            matchingFallbacks += listOf("release")
         }
     }
 

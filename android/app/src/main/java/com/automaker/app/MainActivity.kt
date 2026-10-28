@@ -462,7 +462,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val privileged = privilegedInstallId == session.id
-        val installer = AttributedInstaller(this)
+        val installer = AttributedInstaller(this, approvedByUser = privileged)
         if (privileged && !installer.shizukuReady()) {
             if (installer.requestPermission()) return
             privilegedInstallId = null
