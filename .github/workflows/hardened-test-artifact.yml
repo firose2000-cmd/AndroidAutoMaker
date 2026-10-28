@@ -4,11 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Existing APK preserves the original checksum; rebuild creates a new test signature
+        description: Choose existing-test-release for the non-debuggable APK; rebuild modes create a new signature
         required: true
-        default: existing
+        default: existing-test-release
         type: choice
         options:
+          - existing-test-release
+          - rebuild-test-release
           - existing
           - rebuild
   # Branch-only bootstrap and browser-edit fallback. No default-branch change needed.
@@ -19,6 +21,7 @@ on:
       - .github/workflows/hardened-test-artifact.yml
       - .github/hardened-artifact-request.json
       - artifacts/security-test/**
+      - artifacts/test-release/**
       - scripts/package-actions-apk.py
 
 permissions:
@@ -53,8 +56,8 @@ jobs:
               mode = os.environ['DISPATCH_MODE']
           else:
               mode = json.loads(Path('.github/hardened-artifact-request.json').read_text())['mode']
-          if mode not in ('existing', 'rebuild'):
-              raise SystemExit('Mode must explicitly be existing or rebuild; no automatic rebuild fallback.')
+          if mode not in ('existing', 'rebuild', 'existing-test-release', 'rebuild-test-release'):
+              raise SystemExit('Unknown artifact mode; no automatic rebuild fallback.')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'mode={mode}\n')
           print(f'Mode: {mode}')
@@ -78,13 +81,13 @@ jobs:
           if not manager.is_file():
               raise SystemExit('Expected Android SDK manager is missing from the GitHub-hosted runner.')
           packages = ['build-tools;35.0.0']
-          if os.environ['MODE'] == 'rebuild':
+          if os.environ['MODE'].startswith('rebuild'):
               packages += ['platforms;android-36', 'build-tools;34.0.0']
           subprocess.run([str(manager), '--install', *packages], input='y\n' * 100, text=True, check=True)
           PY
 
       - name: Create a fresh test signing identity only for an explicit rebuild
-        if: steps.mode.outputs.mode == 'rebuild'
+        if: startsWith(steps.mode.outputs.mode, 'rebuild')
         run: |
           umask 077
           test_key="$RUNNER_TEMP/automaker-security-test.keystore"
@@ -92,19 +95,31 @@ jobs:
             -storepass android -keypass android -keyalg RSA -keysize 3072 -validity 3650 \
             -dname 'CN=Android Auto Maker Security Test, O=GitHub Actions Test, C=IN'
           echo "AUTOMAKER_TEST_KEYSTORE=$test_key" >> "$GITHUB_ENV"
+          echo "AUTOMAKER_RELEASE_TEST_KEYSTORE=$test_key" >> "$GITHUB_ENV"
 
-      - name: Build and test Advanced debug only when explicitly requested
-        if: steps.mode.outputs.mode == 'rebuild'
+      - name: Build the explicitly requested Advanced test variant
+        if: startsWith(steps.mode.outputs.mode, 'rebuild')
         working-directory: android
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
         run: |
+          if [ "$MODE" = rebuild-test-release ]; then
+            variant=AdvancedHardenedRelease
+          else
+            variant=AdvancedDebug
+          fi
           bash gradlew --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process \
-            :app:assembleAdvancedDebug :app:testAdvancedDebugUnitTest :app:lintAdvancedDebug
+            ":app:assemble$variant" ":app:test${variant}UnitTest" ":app:lint$variant"
 
       - name: Verify signature, identity and checksum; prepare download
         env:
           MODE: ${{ steps.mode.outputs.mode }}
         run: |
-          if [ "$MODE" = existing ]; then
+          if [ "$MODE" = existing-test-release ]; then
+            apk=artifacts/test-release/AndroidAutoMaker-Advanced-1.1.15-security-test-release.apk
+          elif [ "$MODE" = rebuild-test-release ]; then
+            apk=android/app/build/outputs/apk/advanced/hardenedRelease/AndroidAutoMaker-Advanced-1.1.15-security-test-release.apk
+          elif [ "$MODE" = existing ]; then
             apk=artifacts/security-test/AndroidAutoMaker-Advanced-1.1.15-security-hardened-test.apk
           else
             apk=android/app/build/outputs/apk/advanced/debug/AndroidAutoMaker-Advanced-1.1.15-security-test.apk
@@ -121,5 +136,5 @@ jobs:
           retention-days: 14
 
       - name: Remove the temporary test signing key
-        if: always() && steps.mode.outputs.mode == 'rebuild'
+        if: always() && startsWith(steps.mode.outputs.mode, 'rebuild')
         run: rm -f "$RUNNER_TEMP/automaker-security-test.keystore"

@@ -1,5 +1,10 @@
 # Download the existing hardened Advanced test APK
 
+**Historical debug build:** the default download is now the separately signed,
+[non-debuggable test release](../test-release/README.md). This directory preserves the old APK
+and its original checksum. The instructions below describe the earlier debug-artifact flow;
+select legacy `existing` mode only if you deliberately want that older debuggable build.
+
 This directory contains the **original signed APK** built from application commit
 `39078d9e5440c6ee6fb69069100ddaeec6b10f42`. It was copied without rebuilding or changing its bytes.
 It is deliberately stored on `security/hardened-advanced-1.1.15` because the cloud chat's

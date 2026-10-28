@@ -1,0 +1,71 @@
+{
+  "apk_sha256": "42c00a0e4fc2bb8e43a3d4f18cdfa640d72c2849e21c1ada18d0dac832b7a48b",
+  "signing_certificate_sha256": "1a36b68d51fe4bc945848ad3b0e82558447a9670399dc5a138f58fd9d142a2b4",
+  "application_source_commit": "2fde36345139033506c70b37821be13ddbd5ce2d",
+  "debuggable": false,
+  "compiled_debuggable_attribute": "absent (release defaults)",
+  "size_bytes": 8616929,
+  "build_variant": "advancedHardenedRelease",
+  "application_id": "com.automaker.app.adv.hardenedtestrelease",
+  "version_name": "1.1.15-security-test-release",
+  "separately_signed": true,
+  "android_unit_tests": {
+    "testAdvancedDebugUnitTest": {
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "testAdvancedHardenedReleaseUnitTest": {
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "testAdvancedReleaseUnitTest": {
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "testStandardDebugUnitTest": {
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "testStandardHardenedReleaseUnitTest": {
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "testStandardReleaseUnitTest": {
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "total_android_tests": 84,
+  "node_tests": {
+    "tests": 2,
+    "failures": 0
+  },
+  "lint": {
+    "Warning": 11
+  },
+  "old_debug_apk_unchanged": true,
+  "instrumentation": "Not run: no attached device/emulator",
+  "runtime_shizuku_denial_revocation": "Not tested on a device; gate truth table tested; call sites reviewed",
+  "vehicle_or_android17_validation": "Not run",
+  "driving_safety_code_changes": false,
+  "artifact_verifier_checks": [
+    "signature and exact permission inventory passed",
+    "compiled debuggable flag absent, release default false",
+    "simulated manifest debug=true rejected",
+    "simulated badging application-debuggable rejected",
+    "modified APK checksum rejected"
+  ],
+  "workflow_actionlint": "passed"
+}

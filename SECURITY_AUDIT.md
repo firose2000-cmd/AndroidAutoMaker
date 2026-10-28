@@ -1,5 +1,9 @@
 # Android Auto Maker Advanced 1.1.15 security hardening
 
+**Follow-up:** a dedicated non-debuggable, separately signed test release is now available.
+See [its compiled-manifest verification, Shizuku review and download instructions](artifacts/test-release/README.md).
+The original debug artifact and the historical results below remain unchanged.
+
 Baseline: `fc367e32181d59965a6d0f9bdfb89574bd1fb070` (original developer source).
 Branch: `security/hardened-advanced-1.1.15`. Prepared 28 October 2026.
 
