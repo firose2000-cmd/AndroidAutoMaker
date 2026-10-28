@@ -13,10 +13,20 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 class ConverterTest {
-    private val sdk = File(System.getenv("LOCALAPPDATA"), "Android/Sdk")
-    private val java = File("C:/Program Files/Java/jdk-17/bin/java.exe")
-    private val project = File("..").canonicalFile.parentFile
-    private val keystore = File("src/test/resources/signing.p12")
+    private val windows = System.getProperty("os.name", "").startsWith("Windows", ignoreCase = true)
+    private val executableSuffix = if (windows) ".exe" else ""
+    private val sdk = File(System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+        ?: System.getenv("LOCALAPPDATA")?.let { "$it/Android/Sdk" }
+        ?: error("Set ANDROID_HOME or ANDROID_SDK_ROOT to run conversion integration tests."))
+    private val java = File(System.getProperty("java.home"), "bin/java$executableSuffix")
+    private val project = generateSequence(File(requireNotNull(System.getProperty("user.dir"))).canonicalFile) { it.parentFile }
+        .first { File(it, "tools/apktool.jar").isFile }
+    private val keystore = File(project, "android/app/src/test/resources/signing.p12")
+    private val buildTools = File(sdk, "build-tools").listFiles().orEmpty()
+        .filter { File(it, "aapt2$executableSuffix").isFile && File(it, "zipalign$executableSuffix").isFile }
+        .maxWithOrNull(compareBy<File> {
+            it.name.substringBefore('.').toIntOrNull() ?: 0
+        }.thenBy { it.name }) ?: error("Install Android SDK build-tools containing aapt2 and zipalign.")
 
     @Test(timeout = 180000)
     fun alignsNativeLibrariesTo16Kb() {
@@ -65,9 +75,9 @@ class ConverterTest {
 
     @Test(timeout = 240000)
     fun convertsAnApkAndAnXapk() {
-        val aapt2 = File(sdk, "build-tools/36.0.0/aapt2.exe")
+        val aapt2 = File(buildTools, "aapt2$executableSuffix")
         val androidJar = File(sdk, "platforms/android-36/android.jar")
-        val zipalign = File(sdk, "build-tools/36.0.0/zipalign.exe")
+        val zipalign = File(buildTools, "zipalign$executableSuffix")
         val apktool = File(project, "tools/apktool.jar")
         assertTrue("aapt2 is required", aapt2.isFile)
         assertTrue("android.jar is required", androidJar.isFile)
@@ -80,7 +90,7 @@ class ConverterTest {
         val signer = PackageConverter.signerFrom(keystore)
         val converter = PackageConverter(signer)
         val output = File(directory, "out/signed.apk")
-        output.parentFile.mkdirs()
+        requireNotNull(output.parentFile).mkdirs()
         val keyboardDex = File(project, "tools/keyboard.dex").readBytes()
         val result = converter.convertApk(sample, output, {}, {}, keyboardDex = keyboardDex)
         assertEquals("com.example.plainapp", result.packageName)
@@ -133,8 +143,13 @@ class ConverterTest {
         val archDex = File(project, "tools/arch.dex").readBytes()
         val activityDex = File(project, "tools/activity.dex").readBytes()
         val shizukuDex = File(project, "tools/shizuku.dex").readBytes()
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            converter.convertApk(sample, File(directory, "rejected.apk"), {}, {}, kind = "navigation")
+        }
+        val navigationSource = File(directory, "navigation-source").apply { mkdirs() }
+        val navigationSample = buildSample(navigationSource, aapt2, androidJar, category = "maps")
         val navigationResult = converter.convertApk(
-            sample,
+            navigationSample,
             navigation,
             {},
             {},
@@ -160,12 +175,16 @@ class ConverterTest {
             ),
         )
         val navigationManifest = File(navigationDecoded, "AndroidManifest.xml").readText()
-        assertTrue(navigationResult.changes.any { it.contains("Prepared as navigation") })
+        assertTrue(navigationResult.changes.any { it.contains("navigation bridge") })
         assertTrue(navigationManifest.contains("com.automaker.nav.NavigationCarService"))
         assertTrue(navigationManifest.contains("com.automaker.nav.TouchBridge"))
         assertTrue(navigationManifest.contains("android.accessibilityservice"))
         val touchXml = File(navigationDecoded, "res/xml/automaker_touch_bridge.xml").readText()
         assertTrue(touchXml.contains("flagSendMotionEvents") || touchXml.contains("accessibilityFlags"))
+        assertTrue(touchXml.contains("com.example.plainapp,com.google.android.projection.gearhead"))
+        assertFalse(touchXml.contains("canPerformGestures"))
+        assertFalse(touchXml.contains("canRequestTouchExplorationMode"))
+        assertFalse(navigationManifest.contains("android:isAccessibilityTool=\"true\""))
         assertTrue(navigationManifest.contains("androidx.car.app.CarAppService"))
         assertTrue(navigationManifest.contains("androidx.car.app.category.NAVIGATION"))
         assertTrue(
@@ -198,6 +217,9 @@ class ConverterTest {
             assertTrue(markers.any { it.contains("Lrikka/shizuku/ShizukuProvider;") })
         }
 
+        // Cryptographic verification must pass for both output paths.
+        assertTrue(com.android.apksig.ApkVerifier.Builder(output).build().verify().isVerified)
+        assertTrue(com.android.apksig.ApkVerifier.Builder(navigation).build().verify().isVerified)
         val again = converter.convertApk(output, File(directory, "out/again.apk"), {}, {})
         assertTrue(again.changes.any { it.contains("Prepared as a parked game") })
 
@@ -221,9 +243,16 @@ class ConverterTest {
         )
         val xapk = File(directory, "sample.xapk")
         zipDirectory(xapkDir, xapk)
-        val xapkOut = File(directory, "out/signed.apk")
+        val installParts = com.automaker.app.install.BundleInstall.prepare(xapk, "com.example.plainapp")
+        assertEquals(2, installParts.apks.size)
+        assertEquals(1, installParts.obbs.size)
+        assertEquals("com.example.plainapp", installParts.obbs.single().packageName)
+        assertTrue(com.automaker.app.install.BundleInstall.stageBase(xapk, installParts.apks.first()).isFile)
+        assertEquals(42, com.automaker.app.install.BundleInstall.parseSessionId("Success: created install session [42]"))
+        val xapkOut = File(directory, "out/xapk-signed.apk")
         val packed = converter.convertXapk(xapk, xapkOut, {}, {})
         assertEquals("apk", packed.format)
+        assertTrue(com.android.apksig.ApkVerifier.Builder(xapkOut).build().verify().isVerified)
         assertTrue(packed.changes.any { it.contains("Prepared as a parked game") })
         ZipFile(xapkOut).use { zip ->
             assertTrue(zip.getEntry("AndroidManifest.xml") != null)
@@ -231,7 +260,7 @@ class ConverterTest {
         }
     }
 
-    private fun buildSample(directory: File, aapt2: File, androidJar: File): File {
+    private fun buildSample(directory: File, aapt2: File, androidJar: File, category: String = "video"): File {
         val manifest = File(directory, "AndroidManifest.xml")
         manifest.writeText(
             """
@@ -242,7 +271,7 @@ class ConverterTest {
                 android:versionName="1.0">
                 <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34"/>
                 <uses-feature android:name="android.hardware.type.automotive" android:required="true"/>
-                <application android:label="@string/app_name" android:appCategory="video" android:isGame="false" android:hasCode="false">
+                <application android:label="@string/app_name" android:appCategory="$category" android:isGame="false" android:hasCode="false">
                     <activity android:name="com.example.plainapp.MainActivity" android:exported="false">
                         <intent-filter>
                             <action android:name="android.intent.action.MAIN"/>
@@ -370,7 +399,7 @@ class ConverterTest {
     }
 
     private fun dumpXmlTree(apk: File, name: String): String {
-        val aapt = File(sdk, "build-tools/36.0.0/aapt.exe")
+        val aapt = File(buildTools, "aapt$executableSuffix")
         val process = ProcessBuilder(aapt.absolutePath, "dump", "xmltree", apk.absolutePath, name)
             .redirectErrorStream(true)
             .start()

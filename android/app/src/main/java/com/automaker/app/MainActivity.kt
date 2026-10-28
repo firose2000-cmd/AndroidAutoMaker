@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.Settings
 import android.view.View
 import android.widget.LinearLayout
@@ -25,7 +24,6 @@ import com.automaker.app.databinding.ItemSessionBinding
 import com.automaker.app.engine.InstalledApps
 import rikka.shizuku.Shizuku
 import com.automaker.app.install.AttributedInstaller
-import com.automaker.app.install.BundleInstall
 import com.automaker.app.install.PlayStoreInstall
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
@@ -54,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private val picker by viewModels<PickerModel>()
     private var pendingSave: SessionSnapshot? = null
     private var pendingInstall: SessionSnapshot? = null
+    private var privilegedInstallId: String? = null
 
     private val openFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -79,12 +78,7 @@ class MainActivity : AppCompatActivity() {
         picker.installedPackage = packageName
         picker.name = data.getStringExtra(InstalledAppActivity.EXTRA_LABEL) ?: packageName
         picker.size = data.getLongExtra(InstalledAppActivity.EXTRA_SIZE, -1)
-        allowMissingStorage = false
         showSelection()
-    }
-
-    private val storageAccess = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (picker.installedPackage != null) beginConvert()
     }
 
     private val saveApk = registerForActivityResult(
@@ -115,7 +109,6 @@ class MainActivity : AppCompatActivity() {
 
     private var installResult: CompletableDeferred<Int>? = null
     private var latestSessions: List<SessionSnapshot> = emptyList()
-    private var allowMissingStorage = false
     private val installingIds = mutableSetOf<String>()
     private val openLogs = mutableSetOf<String>()
     private val installedIds = mutableSetOf<String>()
@@ -124,7 +117,13 @@ class MainActivity : AppCompatActivity() {
     private val shizukuPermission = Shizuku.OnRequestPermissionResultListener { requestCode, result ->
         if (requestCode != AttributedInstaller.SHIZUKU_REQUEST) return@OnRequestPermissionResultListener
         val session = pendingInstall ?: return@OnRequestPermissionResultListener
-        if (result == PackageManager.PERMISSION_GRANTED) launchAttributedInstall(session)
+        if (result == PackageManager.PERMISSION_GRANTED && privilegedInstallId == session.id) {
+            launchAttributedInstall(session)
+        } else {
+            privilegedInstallId = null
+            pendingInstall = null
+            snack("Shizuku installation was not authorized. Choose Install again for the normal installer.")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -174,6 +173,11 @@ class MainActivity : AppCompatActivity() {
                 (application as MakerApp).sessions.state.collect { render(it) }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        lifecycleScope.launch(Dispatchers.IO) { (application as MakerApp).sessions.purgeExpired() }
     }
 
     override fun onDestroy() {
@@ -239,22 +243,8 @@ class MainActivity : AppCompatActivity() {
             val error = withContext(Dispatchers.IO) {
                 try {
                     if (installed != null) {
-                        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager() && !allowMissingStorage) {
-                            allowMissingStorage = true
-                            withContext(Dispatchers.Main) {
-                                storageAccess.launch(
-                                    Intent(
-                                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                        Uri.parse("package:$packageName"),
-                                    ),
-                                )
-                            }
-                            return@withContext null
-                        }
                         val staging = File(cacheDir, "installed-${System.nanoTime()}.xapk")
-                        val skipStorage = allowMissingStorage &&
-                            (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager())
-                        val notes = InstalledApps.export(this@MainActivity, installed, staging, skipStorage)
+                        val notes = InstalledApps.export(this@MainActivity, installed, staging)
                         (application as MakerApp).sessions.start(staging, name, picker.kind, picker.renamePackage, notes, picker.gamepad)
                         started = true
                     } else {
@@ -274,16 +264,6 @@ class MainActivity : AppCompatActivity() {
                         started = true
                     }
                     null
-                } catch (error: InstalledApps.StorageAccessRequired) {
-                    allowMissingStorage = true
-                    withContext(Dispatchers.Main) {
-                        val intent = Intent(
-                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            Uri.parse("package:$packageName"),
-                        )
-                        storageAccess.launch(intent)
-                    }
-                    null
                 } catch (error: Exception) {
                     error.message ?: "The package could not be started."
                 }
@@ -296,7 +276,6 @@ class MainActivity : AppCompatActivity() {
                 picker.installedPackage = null
                 picker.name = null
                 picker.size = -1
-                allowMissingStorage = false
                 showSelection()
             }
         }
@@ -445,8 +424,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginInstall(session: SessionSnapshot) {
+        if (installingIds.isNotEmpty()) {
+            snack("Finish the current installation first.")
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Install converted package?")
+            .setMessage("The normal Android installer requires system confirmation. Optional Shizuku installation opens the installer as shell and copies this package's expansion files into shared Android storage. Grant it only for an APK you trust. The package is signed by a new local key.")
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton("Android installer") { _, _ -> prepareInstall(session, false) }
+            .setNeutralButton("Use Shizuku") { _, _ -> prepareInstall(session, true) }
+            .show()
+    }
+
+    private fun prepareInstall(session: SessionSnapshot, privileged: Boolean) {
         pendingInstall = session
-        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+        privilegedInstallId = if (privileged) session.id else null
+        if (!packageManager.canRequestPackageInstalls()) {
             installPermission.launch(
                 Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
             )
@@ -461,74 +455,42 @@ class MainActivity : AppCompatActivity() {
             snack("The signed package is not ready.")
             return
         }
-        // if (session.format == "xapk") {
-        //     launchBundleInstall(file, session)
-        //     return
-        // }
+        if (!packageManager.canRequestPackageInstalls()) {
+            privilegedInstallId = null
+            pendingInstall = null
+            snack("Installation permission was not granted.")
+            return
+        }
+        val privileged = privilegedInstallId == session.id
+        val installer = AttributedInstaller(this)
+        if (privileged && !installer.shizukuReady()) {
+            if (installer.requestPermission()) return
+            privilegedInstallId = null
+            pendingInstall = null
+            snack("Shizuku is unavailable. Choose Install again for the normal Android installer.")
+            return
+        }
+        privilegedInstallId = null
+        pendingInstall = null
         startInstallWatch(session) {
             val before = packageStamp(session.packageName)
             val openedAsShell = withContext(Dispatchers.IO) {
                 val sidecars = (application as MakerApp).sessions.directory(session.id)?.let { File(it, "sidecars") }
+                if (!privileged) return@withContext false
                 if (sidecars != null && sidecars.isDirectory) {
-                    runCatching { AttributedInstaller(this@MainActivity).installSidecars(sidecars) }
+                    installer.installSidecars(sidecars, session.packageName)
                 }
-                AttributedInstaller(this@MainActivity).openAsShell(file)
+                installer.openAsShell(file)
             }
             if (!openedAsShell) {
-                val code = launchInstaller(PlayStoreInstall.createInstallIntent(this@MainActivity, file, session.packageName))
+                val intent = withContext(Dispatchers.IO) {
+                    PlayStoreInstall.createInstallIntent(this@MainActivity, file)
+                }
+                val code = launchInstaller(intent)
                 val timeout = if (code == RESULT_CANCELED) 15_000L else 180_000L
                 return@startInstallWatch awaitPackageChange(session.packageName, before, timeout)
             }
             awaitPackageChange(session.packageName, before, 180_000L)
-        }
-    }
-
-    private fun launchBundleInstall(file: File, session: SessionSnapshot) {
-        startInstallWatch(session) {
-            val before = packageStamp(session.packageName)
-            val outcome = try {
-                withContext(Dispatchers.IO) {
-                    val parts = BundleInstall.prepare(file, session.packageName)
-                    val installer = AttributedInstaller(this@MainActivity)
-                    when {
-                        parts.apks.size > 1 && installer.installBundle(parts.apks, parts.obbs) -> {
-                            installer.setPlayInstaller(session.packageName)
-                            "installed"
-                        }
-                        parts.apks.size > 1 && installer.requestPermission() -> "waiting"
-                        parts.apks.size == 1 -> {
-                            runCatching { installer.copyObbs(parts.obbs) }
-                            val staged = BundleInstall.stageBase(file, parts.apks[0])
-                            if (installer.openAsShell(staged)) {
-                                "opened"
-                            } else {
-                                "dialog:${staged.absolutePath}"
-                            }
-                        }
-                        else -> {
-                            BundleInstall.commit(this@MainActivity, parts.apks)
-                            "opened"
-                        }
-                    }
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                android.util.Log.e("BundleInstall", "Could not open the installer", error)
-                "failed"
-            }
-            when {
-                outcome == "waiting" -> null
-                outcome == "failed" -> false
-                outcome.startsWith("dialog:") -> {
-                    val staged = File(outcome.removePrefix("dialog:"))
-                    val code = launchInstaller(PlayStoreInstall.createInstallIntent(this@MainActivity, staged, session.packageName))
-                    val timeout = if (code == RESULT_CANCELED) 15_000L else 180_000L
-                    awaitPackageChange(session.packageName, before, timeout)
-                }
-                outcome == "installed" -> awaitPackageChange(session.packageName, before, 60_000L)
-                else -> awaitPackageChange(session.packageName, before, 180_000L)
-            }
         }
     }
 
@@ -541,6 +503,7 @@ class MainActivity : AppCompatActivity() {
         installingIds.add(session.id)
         installedIds.remove(session.id)
         render(latestSessions)
+        val sharedSource = (application as MakerApp).sessions.outputFile(session.id)
         val self = CompletableDeferred<Job>()
         val job = lifecycleScope.launch {
             val current = self.await()
@@ -551,6 +514,10 @@ class MainActivity : AppCompatActivity() {
             } catch (error: Exception) {
                 android.util.Log.e("Install", "Could not confirm the install", error)
                 false
+            } finally {
+                sharedSource?.let { source ->
+                    runCatching { PlayStoreInstall.revoke(this@MainActivity, source) }
+                }
             }
             if (installJobs[session.id] != current) return@launch
             installJobs.remove(session.id)

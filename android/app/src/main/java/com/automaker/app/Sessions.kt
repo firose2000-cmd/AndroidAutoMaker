@@ -19,7 +19,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -60,12 +59,6 @@ class MakerApp : Application() {
         SessionRepository.createNotificationChannel(this)
         sessions = SessionRepository(this)
         sessions.restore()
-        sessions.scope.launch {
-            while (true) {
-                delay(10 * 60 * 1000)
-                sessions.purgeExpired()
-            }
-        }
     }
 }
 
@@ -132,6 +125,7 @@ class SessionRepository(private val context: Context) {
         notes: List<String> = emptyList(),
         gamepad: Boolean = false,
     ): String {
+        purgeExpired()
         val id = UUID.randomUUID().toString()
         val xapk = originalName.lowercase().endsWith(".xapk")
         val directory = File(sessionsDir(), id)
@@ -181,14 +175,12 @@ class SessionRepository(private val context: Context) {
         remove(id)
     }
 
-    @Suppress("DEPRECATION")
     private fun stopWorker(worker: Thread?) {
-        if (worker == null) return
-        worker.interrupt()
-        try {
-            worker.stop()
-        } catch (_: UnsupportedOperationException) {
-        }
+        worker?.interrupt()
+    }
+
+    fun cancelRunning() {
+        jobs.values.filter { it.status == "running" }.forEach { discard(it.id) }
     }
 
     fun directory(id: String): File? = jobs[id]?.directory
@@ -350,12 +342,6 @@ class SessionRepository(private val context: Context) {
     }
 
     private fun keepAlive() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
         val intent = Intent(context, ConvertService::class.java)
         try {
             context.startForegroundService(intent)
@@ -530,6 +516,11 @@ class SessionRepository(private val context: Context) {
 class ConvertService : Service() {
     override fun onBind(intent: Intent?) = null
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        (application as MakerApp).sessions.cancelRunning()
+        stopSelf()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = SessionRepository.notification(this)
         if (Build.VERSION.SDK_INT >= 29) {
@@ -541,6 +532,7 @@ class ConvertService : Service() {
         } else {
             startForeground(SessionRepository.NOTIFICATION_ID, notification)
         }
+        if ((application as MakerApp).sessions.state.value.none { it.status == "running" }) stopSelf()
         return START_NOT_STICKY
     }
 }

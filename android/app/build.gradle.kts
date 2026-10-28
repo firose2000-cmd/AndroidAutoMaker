@@ -40,6 +40,15 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".hardenedtest"
+            versionNameSuffix = "-security-test"
+            // Use a fresh test identity without replacing the original or the normal debug key.
+            signingConfig = signingConfigs.getByName("debug").apply {
+                storeFile = file(providers.environmentVariable("AUTOMAKER_TEST_KEYSTORE")
+                    .orElse("${System.getProperty("user.home")}/.android/automaker-security-test.keystore").get())
+            }
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")

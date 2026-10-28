@@ -75,18 +75,6 @@ import java.util.Set;
 import java.util.WeakHashMap;
 
 public class NavigationCarService extends CarAppService {
-    static {
-        try {
-            Class<?> runtimeClass = Class.forName("dalvik.system.VMRuntime");
-            Method getRuntime = Class.class.getDeclaredMethod("getDeclaredMethod", String.class, Class[].class);
-            Method getRuntimeMethod = (Method) getRuntime.invoke(runtimeClass, "getRuntime", new Class<?>[0]);
-            Method exempt = (Method) getRuntime.invoke(runtimeClass, "setHiddenApiExemptions", (Object) new Class[]{String[].class});
-            Object runtime = getRuntimeMethod.invoke(null);
-            exempt.invoke(runtime, (Object) new String[]{"L"});
-        } catch (Throwable ignored) {
-        }
-    }
-
     static void deliverCarTouch(MotionEvent event) {
         CarMirror mirror = CarMirror.active == null ? null : CarMirror.active.get();
         if (mirror != null) mirror.carTouch(event);
@@ -160,7 +148,13 @@ public class NavigationCarService extends CarAppService {
 
     @Override
     public HostValidator createHostValidator() {
-        return HostValidator.ALLOW_ALL_HOSTS_VALIDATOR;
+        // AndroidX car app 1.7.0's published Android Auto signing certificates.
+        // Package name alone is not a trust boundary.
+        return new HostValidator.Builder(this)
+                .addAllowedHost("com.google.android.projection.gearhead", "fdb00c43dbde8b51cb312aa81d3b5fa17713adb94b28f598d77f8eb89daceedf")
+                .addAllowedHost("com.google.android.projection.gearhead", "70811a3eacfd2e83e18da9bfede52df16ce91f2e69a44d21f18ab66991130771")
+                .addAllowedHost("com.google.android.projection.gearhead", "1975b2f17177bc89a5dff31f9e64a6cae281a53dc1d1d59b1d147fe1c82afa00")
+                .build();
     }
 
     @Override
@@ -494,6 +488,7 @@ public class NavigationCarService extends CarAppService {
             displayId = display.getDisplay().getDisplayId();
             Log.i("AutoMakerNav", "Patched app display " + displayId + " flags " + display.getDisplay().getFlags());
             showIcon(context);
+            TouchBridge.startSession();
             openWithShizuku(context);
         }
 
@@ -515,7 +510,7 @@ public class NavigationCarService extends CarAppService {
         }
 
         void offerKeyboard(String text, int inputType, boolean password, boolean force) {
-            if (displayId == Display.INVALID_DISPLAY || keyboardClient == null) return;
+            if (password || displayId == Display.INVALID_DISPLAY || keyboardClient == null) return;
             if (force) keyboardHeld = false;
             if (keyboardHeld) return;
             captureEditor();
@@ -781,6 +776,7 @@ public class NavigationCarService extends CarAppService {
         }
 
         private void runShell() throws Exception {
+            if (displayId == Display.INVALID_DISPLAY || active == null || active.get() != this) return;
             String output = command("am", "start", "--user", "0", "--display", String.valueOf(displayId), "-n", component);
             int task = -1;
             String moved = "";
@@ -834,61 +830,13 @@ public class NavigationCarService extends CarAppService {
         }
 
         private void enableTouchBridge(String packageName) {
-            if (packageName == null || packageName.length() == 0) return;
-            try {
-                String component = packageName + "/" + TouchBridge.NAME;
-                String current = safeSetting(shell("settings get secure enabled_accessibility_services"));
-                String without = current.replace(component, "").replace("::", ":");
-                if (without.startsWith(":")) without = without.substring(1);
-                if (without.endsWith(":")) without = without.substring(0, without.length() - 1);
-                if (!without.equals(current)) {
-                    shell("settings put secure enabled_accessibility_services '" + without + "'");
-                }
-                String next = without.length() == 0 ? component : without + ":" + component;
-                shell("settings put secure enabled_accessibility_services '" + next + "'");
-                shell("settings put secure accessibility_enabled 1");
-                try {
-                    shell("appops set " + packageName + " SYSTEM_ALERT_WINDOW allow");
-                } catch (Exception ignored) {
-                    Log.i("AutoMakerNav", "Touch layer permission was not granted");
-                }
-                Log.i("AutoMakerNav", "Touch bridge enabled");
-            } catch (Exception error) {
-                Log.i("AutoMakerNav", "Touch bridge was not enabled", error);
-            }
+            // Android's Accessibility and overlay settings must be granted by the user on
+            // the phone. A Shizuku grant is not consent to change these settings.
+            TouchBridge.startSession();
         }
 
         private static void disableTouchBridge(String packageName) {
-            if (packageName == null || packageName.length() == 0) return;
-            try {
-                if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return;
-                String component = packageName + "/" + TouchBridge.NAME;
-                String current = safeSetting(shell("settings get secure enabled_accessibility_services"));
-                if (!current.contains(component)) return;
-                String next = current.replace(component, "").replace("::", ":");
-                if (next.startsWith(":")) next = next.substring(1);
-                if (next.endsWith(":")) next = next.substring(0, next.length() - 1);
-                shell("settings put secure enabled_accessibility_services '" + next + "'");
-                if (next.length() == 0) shell("settings put secure accessibility_enabled 0");
-                Log.i("AutoMakerNav", "Touch bridge removed");
-            } catch (Exception error) {
-                Log.i("AutoMakerNav", "Touch bridge stayed enabled", error);
-            }
-        }
-
-        private static String safeSetting(String value) {
-            if (value == null) return "";
-            String trimmed = value.trim();
-            if (trimmed.equals("null")) return "";
-            StringBuilder safe = new StringBuilder();
-            for (int i = 0; i < trimmed.length(); i++) {
-                char c = trimmed.charAt(i);
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                        || c == '.' || c == '/' || c == ':' || c == '_' || c == '$') {
-                    safe.append(c);
-                }
-            }
-            return safe.toString();
+            TouchBridge.stopSession();
         }
 
         private int rootTaskId(String stacks, String name) {
@@ -923,6 +871,9 @@ public class NavigationCarService extends CarAppService {
         }
 
         private static String command(String... args) throws Exception {
+            if (!sessionActive() || !Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                throw new SecurityException("Active navigation session and Shizuku consent required");
+            }
             Method method = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
             method.setAccessible(true);
             Process process = (Process) method.invoke(null, (Object) args, null, null);

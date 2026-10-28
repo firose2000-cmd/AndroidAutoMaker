@@ -12,6 +12,7 @@ tools/merge/
 *.log
 .env
 *.apk
+!android/app/src/androidTest/assets/sample.apk
 *.aab
 *.apks
 *.idsig

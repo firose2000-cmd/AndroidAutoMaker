@@ -15,14 +15,14 @@
     <string name="installed_title">Installed apps</string>
     <string name="installed_search">Search apps</string>
     <string name="installed_empty">No installed apps were found.</string>
-    <string name="kind_navigation">Navigation (needs Shizuku)\nThe patched app uses Shizuku to open its screen in Android Auto.</string>
+    <string name="kind_navigation">Navigation (needs Shizuku)\nThe patched app needs its own Shizuku consent. Optional touch forwarding requires manual Accessibility and overlay approval in Android settings. Never grant these to an untrusted app.</string>
     <string name="change_game_title">Parked game.</string>
     <string name="change_game_body">Available while the car is parked.</string>
     <string name="change_phone_title">Uninstall the original app first.</string>
     <string name="change_phone_side">Installs next to the original app.</string>
     <string name="change_navigation_title">Navigation.</string>
-    <string name="change_navigation_body">Available while driving.</string>
-    <string name="driving_note">The patched app uses Shizuku to open its screen in Android Auto.</string>
+    <string name="change_navigation_body">Use navigation apps only. Obey Android Auto safety restrictions.</string>
+    <string name="driving_note">The patched app needs its own Shizuku consent. Optional touch forwarding requires manual Accessibility and overlay approval in Android settings. Never grant these to an untrusted app.</string>
     <string name="parked_note">A parked game needs a phone on Android 15 or newer.</string>
     <bool name="offers_navigation">false</bool>
     <string name="install_note">Uninstall the original app first.</string>

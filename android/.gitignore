@@ -5,6 +5,7 @@ local.properties
 dist/
 release.keystore
 *.apk
+!app/src/androidTest/assets/sample.apk
 *.aab
 *.apks
 *.idsig
