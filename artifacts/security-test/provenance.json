@@ -1,0 +1,7 @@
+{
+  "application_commit": "39078d9e5440c6ee6fb69069100ddaeec6b10f42",
+  "apk_sha256": "503f3a3f6c581a871db5f032f561a8881fe8a70b638bba459993d4dc29311705",
+  "certificate_sha256": "8f19dd6ed340086cf4d701841dab913170a7add143f15c0987556e285cb5bf4d",
+  "rebuilt": false,
+  "purpose": "Existing separately signed Advanced v1.1.15 hardened test APK; stationary testing only."
+}

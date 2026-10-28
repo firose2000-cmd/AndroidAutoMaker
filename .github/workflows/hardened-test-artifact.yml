@@ -1,0 +1,125 @@
+name: Download hardened Advanced test APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Existing APK preserves the original checksum; rebuild creates a new test signature
+        required: true
+        default: existing
+        type: choice
+        options:
+          - existing
+          - rebuild
+  # Branch-only bootstrap and browser-edit fallback. No default-branch change needed.
+  push:
+    branches:
+      - security/hardened-advanced-1.1.15
+    paths:
+      - .github/workflows/hardened-test-artifact.yml
+      - .github/hardened-artifact-request.json
+      - artifacts/security-test/**
+      - scripts/package-actions-apk.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardened-apk-download-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  artifact:
+    if: github.ref == 'refs/heads/security/hardened-advanced-1.1.15'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the requested security branch commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select explicit artifact mode
+        id: mode
+        env:
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          assert os.environ['GITHUB_REF'] == 'refs/heads/security/hardened-advanced-1.1.15'
+          if os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch':
+              mode = os.environ['DISPATCH_MODE']
+          else:
+              mode = json.loads(Path('.github/hardened-artifact-request.json').read_text())['mode']
+          if mode not in ('existing', 'rebuild'):
+              raise SystemExit('Mode must explicitly be existing or rebuild; no automatic rebuild fallback.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'mode={mode}\n')
+          print(f'Mode: {mode}')
+          PY
+
+      - name: Set up JDK 17 for signature verification and optional build
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install the required SDK tools
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          sdk = Path(os.environ['ANDROID_HOME'])
+          manager = sdk / 'cmdline-tools/latest/bin/sdkmanager'
+          if not manager.is_file():
+              raise SystemExit('Expected Android SDK manager is missing from the GitHub-hosted runner.')
+          packages = ['build-tools;35.0.0']
+          if os.environ['MODE'] == 'rebuild':
+              packages += ['platforms;android-36', 'build-tools;34.0.0']
+          subprocess.run([str(manager), '--install', *packages], input='y\n' * 100, text=True, check=True)
+          PY
+
+      - name: Create a fresh test signing identity only for an explicit rebuild
+        if: steps.mode.outputs.mode == 'rebuild'
+        run: |
+          umask 077
+          test_key="$RUNNER_TEMP/automaker-security-test.keystore"
+          keytool -genkeypair -noprompt -keystore "$test_key" -alias AndroidDebugKey \
+            -storepass android -keypass android -keyalg RSA -keysize 3072 -validity 3650 \
+            -dname 'CN=Android Auto Maker Security Test, O=GitHub Actions Test, C=IN'
+          echo "AUTOMAKER_TEST_KEYSTORE=$test_key" >> "$GITHUB_ENV"
+
+      - name: Build and test Advanced debug only when explicitly requested
+        if: steps.mode.outputs.mode == 'rebuild'
+        working-directory: android
+        run: |
+          bash gradlew --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process \
+            :app:assembleAdvancedDebug :app:testAdvancedDebugUnitTest :app:lintAdvancedDebug
+
+      - name: Verify signature, identity and checksum; prepare download
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          if [ "$MODE" = existing ]; then
+            apk=artifacts/security-test/AndroidAutoMaker-Advanced-1.1.15-security-hardened-test.apk
+          else
+            apk=android/app/build/outputs/apk/advanced/debug/AndroidAutoMaker-Advanced-1.1.15-security-test.apk
+          fi
+          python scripts/package-actions-apk.py --mode "$MODE" --apk "$apk" \
+            --output "$RUNNER_TEMP/hardened-apk-artifact"
+
+      - name: Upload the verified APK and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hardened-advanced-1.1.15-${{ steps.mode.outputs.mode }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/hardened-apk-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove the temporary test signing key
+        if: always() && steps.mode.outputs.mode == 'rebuild'
+        run: rm -f "$RUNNER_TEMP/automaker-security-test.keystore"
