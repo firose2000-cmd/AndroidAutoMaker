@@ -1,5 +1,6 @@
 package com.automaker.app.engine
 
+import com.automaker.app.BuildConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -239,8 +240,8 @@ class ConverterTest {
         assertFalse(navigationManifest.contains("android:isGame=\"true\""))
         assertFalse(navigationManifest.contains("com.automaker.nav.NavigationActivity"))
         assertFalse(navigationManifest.contains("com.automaker.game.KeyboardStay"))
-        assertTrue(navigationManifest.contains("rikka.shizuku.ShizukuProvider"))
-        assertTrue(navigationManifest.contains("moe.shizuku.manager.permission.API_V23"))
+        assertEquals(BuildConfig.ENABLE_PRIVILEGED_INSTALL, navigationManifest.contains("rikka.shizuku.ShizukuProvider"))
+        assertEquals(BuildConfig.ENABLE_PRIVILEGED_INSTALL, navigationManifest.contains("moe.shizuku.manager.permission.API_V23"))
         val navigationXml = File(navigationDecoded, "res/xml/automotive_app_desc.xml").readText()
         assertTrue(navigationXml.contains("template"))
         ZipFile(navigation).use { zip ->
@@ -255,7 +256,7 @@ class ConverterTest {
                 .toList()
             assertTrue(markers.any { it.contains("Landroidx/lifecycle/AullLifecycleObserverAdapter;") })
             assertTrue(markers.any { it.contains("Landroidx/activity/OnBackPressedDispatcher;") })
-            assertTrue(markers.any { it.contains("Lrikka/shizuku/ShizukuProvider;") })
+            assertEquals(BuildConfig.ENABLE_PRIVILEGED_INSTALL, markers.any { it.contains("Lrikka/shizuku/ShizukuProvider;") })
         }
 
         assertTrue(com.android.apksig.ApkVerifier.Builder(output).build().verify().isVerified)

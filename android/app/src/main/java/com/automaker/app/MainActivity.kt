@@ -131,7 +131,9 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         setSupportActionBar(binding.toolbar)
-        runCatching { Shizuku.addRequestPermissionResultListener(shizukuPermission) }
+        if (BuildConfig.ENABLE_PRIVILEGED_INSTALL) {
+            runCatching { Shizuku.addRequestPermissionResultListener(shizukuPermission) }
+        }
         binding.choose.setOnClickListener {
             openFile.launch(arrayOf("*/*"))
         }
@@ -184,7 +186,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermission) }
+        if (BuildConfig.ENABLE_PRIVILEGED_INSTALL) {
+            runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermission) }
+        }
         super.onDestroy()
     }
 
@@ -431,18 +435,22 @@ class MainActivity : AppCompatActivity() {
             snack("Finish the current installation first.")
             return
         }
-        MaterialAlertDialogBuilder(this)
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle("Install converted package?")
-            .setMessage("The normal Android installer requires system confirmation. Optional Shizuku installation opens the installer as shell and copies this package's expansion files into shared Android storage. Grant it only for an APK you trust. The package is signed by a new local key.")
+            .setMessage(if (BuildConfig.ENABLE_PRIVILEGED_INSTALL)
+                "The normal Android installer requires system confirmation. Optional Shizuku installation opens the installer as shell and copies this package's expansion files into shared Android storage. Grant it only for an APK you trust. The package is signed by a new local key."
+                else "The Android installer requires system confirmation. Install only APKs you trust.")
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton("Android installer") { _, _ -> prepareInstall(session, false) }
-            .setNeutralButton("Use Shizuku") { _, _ -> prepareInstall(session, true) }
-            .show()
+        if (BuildConfig.ENABLE_PRIVILEGED_INSTALL) {
+            dialog.setNeutralButton("Use Shizuku") { _, _ -> prepareInstall(session, true) }
+        }
+        dialog.show()
     }
 
     private fun prepareInstall(session: SessionSnapshot, privileged: Boolean) {
         pendingInstall = session
-        privilegedInstallId = if (privileged) session.id else null
+        privilegedInstallId = if (BuildConfig.ENABLE_PRIVILEGED_INSTALL && privileged) session.id else null
         if (!packageManager.canRequestPackageInstalls()) {
             installPermission.launch(
                 Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
@@ -464,7 +472,7 @@ class MainActivity : AppCompatActivity() {
             snack("Installation permission was not granted.")
             return
         }
-        val privileged = privilegedInstallId == session.id
+        val privileged = BuildConfig.ENABLE_PRIVILEGED_INSTALL && privilegedInstallId == session.id
         val installer = AttributedInstaller(this, approvedByUser = privileged)
         if (privileged && !installer.shizukuReady()) {
             if (installer.requestPermission()) return

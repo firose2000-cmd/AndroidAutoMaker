@@ -1,5 +1,6 @@
 package com.automaker.app.engine
 
+import com.automaker.app.BuildConfig
 import com.reandroid.apk.ApkModule
 import com.reandroid.app.AndroidManifest
 import com.reandroid.archive.ByteInputSource
@@ -108,7 +109,9 @@ object ManifestPatcher {
             ensureNavigationService(manifest, application, changes)
             ensureTouchBridge(apk, application, changes)
             ensureMinCarApi(application, changes, "Set the app car API level to 5.")
-            ensureShizuku(manifest, application, changes)
+            if (BuildConfig.ENABLE_PRIVILEGED_INSTALL) {
+                ensureShizuku(manifest, application, changes)
+            }
             separateLauncherFromCar(manifest)
             allowOnVirtualDisplay(application)
             ensureNavigationDescriptor(apk, application, changes)
