@@ -68,6 +68,7 @@ android {
 
     buildTypes {
         release {
+            buildConfigField("boolean", "ENABLE_PRIVILEGED_INSTALL", "true")
             isMinifyEnabled = false
             signingConfig = if (sparseSigningConfigured) signingConfigs.getByName("hardenedSparseTest") else null
         }
@@ -79,6 +80,7 @@ android {
             applicationIdSuffix = ".hardenedsparseresourcetest"
             versionNameSuffix = "-hardened-sparse-test"
             matchingFallbacks += listOf("release")
+            buildConfigField("boolean", "ENABLE_PRIVILEGED_INSTALL", "false")
         }
     }
 
@@ -98,6 +100,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         viewBinding = true
     }
 
