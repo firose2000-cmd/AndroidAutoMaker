@@ -482,7 +482,20 @@ class PackageConverter(private val signerFor: (packageName: String) -> ApkSigner
                 val types = pair.typeBlocks
                 while (types.hasNext()) {
                     val type = types.next() as? TypeBlock ?: continue
-                    if (type.entryArray.size() < needed) type.ensureEntriesCount(needed)
+                    if (type.isSparse) {
+                        // Sparse counts are populated IDs, not dense ID-space sizes. Padding
+                        // creates duplicate ID 0 records; merge insertion can also reverse IDs.
+                        // Android binary-searches this index, so keep it compact and ascending.
+                        val entries = type.entryArray
+                        val offsets = entries.offsetReferenceList
+                        val order = (0 until entries.size()).sortedBy { offsets.get(it).idx }
+                        val sortedEntries = order.map { entries.get(it) }.toTypedArray()
+                        val sortedOffsets = order.map { offsets.get(it) }.toTypedArray()
+                        entries.setElements(sortedEntries)
+                        offsets.setElements(sortedOffsets)
+                    } else if (type.entryArray.size() < needed) {
+                        type.ensureEntriesCount(needed)
+                    }
                 }
             }
         }
