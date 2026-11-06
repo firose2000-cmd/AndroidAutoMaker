@@ -13,6 +13,8 @@ import com.reandroid.arsc.chunk.xml.AndroidManifestBlock;
 import com.reandroid.arsc.chunk.xml.ResXmlAttribute;
 import com.reandroid.arsc.chunk.xml.ResXmlElement;
 import com.reandroid.arsc.container.SpecTypePair;
+import com.reandroid.arsc.value.Entry;
+import com.reandroid.arsc.item.OffsetItem;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -383,7 +385,25 @@ public final class MergeXapk {
                 Iterator<TypeBlock> types = pair.getTypeBlocks();
                 while (types.hasNext()) {
                     TypeBlock type = types.next();
-                    if (type.getEntryArray().size() < needed) type.ensureEntriesCount(needed);
+                    if (type.isSparse()) {
+                        // Sparse counts are populated IDs, not the dense ID-space size.
+                        // Padding duplicates ID 0; Android requires ascending IDs for lookup.
+                        var entries = type.getEntryArray();
+                        var offsets = entries.getOffsetReferenceList();
+                        Integer[] order = java.util.stream.IntStream.range(0, entries.size()).boxed()
+                            .sorted(java.util.Comparator.comparingInt(i -> offsets.get(i).getIdx()))
+                            .toArray(Integer[]::new);
+                        Entry[] sortedEntries = new Entry[order.length];
+                        OffsetItem[] sortedOffsets = new OffsetItem[order.length];
+                        for (int i = 0; i < order.length; i++) {
+                            sortedEntries[i] = entries.get(order[i]);
+                            sortedOffsets[i] = offsets.get(order[i]);
+                        }
+                        entries.setElements(sortedEntries);
+                        offsets.setElements(sortedOffsets);
+                    } else if (type.getEntryArray().size() < needed) {
+                        type.ensureEntriesCount(needed);
+                    }
                 }
             }
         }
