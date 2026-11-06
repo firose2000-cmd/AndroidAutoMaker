@@ -7,9 +7,13 @@ import com.reandroid.arsc.value.ValueType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
+import org.junit.Assume.assumeTrue
 import java.io.File
 import java.nio.file.Files
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -31,10 +35,69 @@ class SplitResourceIntegrityTest {
     @Test(timeout = 240000)
     fun preservesOptimizedResourceIdsAcrossFourSplits() = checkConversion(true)
 
+    @Test(timeout = 240000)
+    fun suppliedYouTubeTablesRemainSearchableAfterConversion() {
+        val location = System.getenv("YOUTUBE_RESOURCE_TABLES")
+        assumeTrue("Set YOUTUBE_RESOURCE_TABLES to the five extracted diagnostic files", location != null)
+        val source = File(location!!)
+        val root = Files.createTempDirectory("youtube-resource-tables").toFile()
+        try {
+            // Diagnostic shells contain the exact tables and supplied converted manifest,
+            // not the executable app or its resource files. Never install these shells.
+            val tables = listOf("Original_Base_resources.arsc", "Original_English_resources.arsc", "Original_XXHDPI_resources.arsc")
+            val inputs = tables.mapIndexed { index, name ->
+                File(root, if (index == 0) "base.apk" else "config.$index.apk").also { apk ->
+                    ZipOutputStream(apk.outputStream()).use { zip ->
+                        zip.putNextEntry(ZipEntry("resources.arsc")); zip.write(File(source, name).readBytes()); zip.closeEntry()
+                        zip.putNextEntry(ZipEntry("AndroidManifest.xml")); zip.write(File(source, "Converted_AndroidManifest.xml").readBytes()); zip.closeEntry()
+                    }
+                }
+            }
+            val expected = inputs.flatMap { rawResources(it).entries }.associate { it.toPair() }
+            assertTrue(expected.keys.any { it.startsWith("7f060dfd/") })
+            assertTrue(inputs.sumOf { assertSparseIndexes(it) } > 0)
+            val broken = File(root, "known-converted.apk")
+            ZipOutputStream(broken.outputStream()).use { zip ->
+                zip.putNextEntry(ZipEntry("resources.arsc"))
+                zip.write(File(source, "Converted_resources.arsc").readBytes())
+                zip.closeEntry()
+            }
+            val failure = assertThrows(AssertionError::class.java) { assertSparseIndexes(broken) }
+            assertTrue(failure.message.orEmpty().contains("strictly ascending sparse IDs"))
+            val bundle = File(root, "tables.xapk")
+            ZipOutputStream(bundle.outputStream()).use { zip ->
+                for (input in inputs) { zip.putNextEntry(ZipEntry(input.name)); zip.write(input.readBytes()); zip.closeEntry() }
+            }
+            val output = File(root, "out/signed.apk")
+            output.parentFile!!.mkdirs()
+            val converter = PackageConverter(PackageConverter.signerFrom(File("src/test/resources/signing.p12")))
+            converter.convertXapk(bundle, output, {}, {}, packageSuffix = PackageNames.SUFFIX)
+            assertSparseIndexes(output)
+            assertEquals("All supplied ID/configuration/type/value tuples", expected, rawResources(output))
+            assertTrue(ApkVerifier.Builder(output).build().verify().isVerified)
+            println("YouTube Android: ${expected.size} preserved records; ${assertSparseIndexes(output)} valid sparse chunks; ${tableSize(output)} resource bytes")
+            val classes = File(root, "desktop-classes").also { it.mkdirs() }
+            val javaHome = File(requireNotNull(System.getProperty("java.home")))
+            val library = File(project, "tools/lib/ARSCLib-1.3.8.jar")
+            run(File(javaHome, "bin/javac$suffix"), "-cp", library.path, "-d", classes.path,
+                File(project, "tools/src/com/automaker/merge/MergeXapk.java").path)
+            val desktop = File(root, "desktop/merged.apk")
+            run(File(javaHome, "bin/java$suffix"), "-cp", classes.path + File.pathSeparator + library.path,
+                "com.automaker.merge.MergeXapk", bundle.path, desktop.path)
+            assertSparseIndexes(desktop)
+            assertEquals("Desktop merge preserves supplied resource tuples", expected, rawResources(desktop))
+            println("YouTube desktop: ${expected.size} preserved records; ${assertSparseIndexes(desktop)} valid sparse chunks; ${tableSize(desktop)} resource bytes")
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     private fun checkConversion(optimized: Boolean) {
         val root = Files.createTempDirectory("split-resources").toFile()
         try {
             val inputs = fixture(root, optimized)
+            val sparseChunks = inputs.sumOf { assertSparseIndexes(it) }
+            if (optimized) assertTrue("Fixture must exercise sparse indexes", sparseChunks > 0)
             val expected = sortedMapOf<String, String>()
             for (input in inputs) {
                 for ((key, value) in resources(input)) {
@@ -62,6 +125,7 @@ class SplitResourceIntegrityTest {
                 output.parentFile!!.mkdirs()
                 val result = converter.convertXapk(bundle, output, {}, {}, keyboardDex = keyboard,
                     packageSuffix = if (rename) PackageNames.SUFFIX else "")
+                assertSparseIndexes(output)
                 assertEquals("resource ID/configuration/value tuples, optimized=$optimized rename=$rename",
                     expected, resources(output))
                 assertEquals("Raw types, reference IDs, style parents and attribute IDs", rawValues, rawResources(output))
@@ -152,6 +216,43 @@ class SplitResourceIntegrityTest {
 
     private fun tableSize(apk: File): Long = ZipFile(apk).use { it.getEntry("resources.arsc")?.size ?: 0L }
 
+    private fun assertSparseIndexes(apk: File): Int = ZipFile(apk).use { zip ->
+        val entry = zip.getEntry("resources.arsc") ?: return@use 0
+        val bytes = zip.getInputStream(entry).use { it.readBytes() }
+        val data = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        var sparseCount = 0
+        fun u16(offset: Int) = data.getShort(offset).toInt() and 0xffff
+        fun scan(start: Int, end: Int) {
+            var offset = start
+            while (offset < end) {
+                assertTrue("Truncated chunk", offset + 8 <= end)
+                val type = u16(offset)
+                val header = u16(offset + 2)
+                val size = data.getInt(offset + 4)
+                assertTrue("Invalid chunk bounds", header >= 8 && size >= header && size <= end - offset)
+                if (type == 0x0002 || type == 0x0200) scan(offset + header, offset + size)
+                if (type == 0x0201 && bytes[offset + 9].toInt() and 1 != 0) {
+                    sparseCount++
+                    val count = data.getInt(offset + 12)
+                    val entriesStart = data.getInt(offset + 16)
+                    assertTrue(count >= 0 && count.toLong() * 4 <= entriesStart - header)
+                    var previous = -1
+                    for (index in 0 until count) {
+                        val id = u16(offset + header + index * 4)
+                        assertTrue("Android binary search requires strictly ascending sparse IDs: ${apk.name} type=${bytes[offset + 8]} index=$index previous=$previous id=$id",
+                            id > previous)
+                        previous = id
+                        val relative = u16(offset + header + index * 4 + 2) * 4
+                        assertTrue("Sparse entry points outside chunk", entriesStart + relative + 8 <= size)
+                    }
+                }
+                offset += size
+            }
+        }
+        scan(0, bytes.size)
+        sparseCount
+    }
+
     private fun fixture(root: File, optimized: Boolean): List<File> {
         fun write(path: String, text: String): File = File(root, path).also { it.parentFile!!.mkdirs(); it.writeText(text) }
         val manifest = write("AndroidManifest.xml", """
@@ -179,7 +280,10 @@ class SplitResourceIntegrityTest {
             </resources>
         """.trimIndent())
         write("res/values-en/values.xml", "<resources><string name=\"title\">English</string></resources>")
-        write("res/values-night/values.xml", "<resources><color name=\"background\">#000000</color></resources>")
+        write("res/values/padding.xml", "<resources>" + (0 until 64).joinToString("") {
+            "<color name=\"padding_$it\">#123456</color>"
+        } + "</resources>")
+        write("res/values-night/values.xml", "<resources><color name=\"accent\">#f0f0f0</color><color name=\"background\">#000000</color></resources>")
         for (directory in listOf("drawable", "drawable-xxhdpi")) {
             write("res/$directory/image.xml", """<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle"><solid android:color="@color/alias"/></shape>""")
         }
@@ -199,7 +303,7 @@ class SplitResourceIntegrityTest {
         val inputs = listOf(base, abi, english, density)
         if (optimized) for (input in listOf(base, english, density)) {
             val optimizedFile = File(root, "optimized.apk")
-            run(aapt, "optimize", "--collapse-resource-names", "--enable-sparse-encoding", "--deduplicate-entry-values",
+            run(aapt, "optimize", "--collapse-resource-names", "--force-sparse-encoding", "--deduplicate-entry-values",
                 "-o", optimizedFile.path, input.path)
             optimizedFile.copyTo(input, overwrite = true)
             optimizedFile.delete()
