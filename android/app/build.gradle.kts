@@ -1,7 +1,20 @@
+import java.security.KeyStore
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// No default keystore, embedded credentials or debug-signing fallback for this candidate.
+val sparseSigningVariables = listOf("AUTOMAKER_HARDENED_KEYSTORE", "AUTOMAKER_HARDENED_STORE_PASSWORD",
+    "AUTOMAKER_HARDENED_KEY_ALIAS", "AUTOMAKER_HARDENED_KEY_PASSWORD")
+val sparseSigningValues = sparseSigningVariables.associateWith { providers.environmentVariable(it).orNull }
+val sparseSigningConfigured = sparseSigningValues.values.all { !it.isNullOrBlank() }
+require(sparseSigningValues.values.all { it == null } || sparseSigningConfigured) {
+    "Set all four AUTOMAKER_HARDENED signing variables, or unset all four for an unsigned candidate."
+}
+val installedHardenedCertificateSha256 = "1a36b68d51fe4bc945848ad3b0e82558447a9670399dc5a138f58fd9d142a2b4"
 
 android {
     namespace = "com.automaker.app"
@@ -19,6 +32,14 @@ android {
     }
 
     signingConfigs {
+        if (sparseSigningConfigured) {
+            create("hardenedSparseTest") {
+                storeFile = file(sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEYSTORE")!!)
+                storePassword = sparseSigningValues.getValue("AUTOMAKER_HARDENED_STORE_PASSWORD")
+                keyAlias = sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEY_ALIAS")
+                keyPassword = sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEY_PASSWORD")
+            }
+        }
         create("release") {
             storeFile = rootProject.file("release.keystore")
             storePassword = "automaker"
@@ -43,6 +64,15 @@ android {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
+        }
+        create("hardenedSparseRelease") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isJniDebuggable = false
+            signingConfig = if (sparseSigningConfigured) signingConfigs.getByName("hardenedSparseTest") else null
+            applicationIdSuffix = ".hardenedsparseresourcetest"
+            versionNameSuffix = "-hardened-sparse-test"
+            matchingFallbacks += listOf("release")
         }
     }
 
@@ -89,9 +119,34 @@ android {
         val advanced = flavorName == "advanced"
         val version = versionName
         outputs.configureEach {
+            val candidate = if (buildType.name == "hardenedSparseRelease") "-HardenedSparseTest" else ""
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
-                if (advanced) "AndroidAutoMaker-Advanced-$version.apk" else "AndroidAutoMaker-$version.apk"
+                if (advanced) "AndroidAutoMaker-Advanced-$version$candidate.apk" else "AndroidAutoMaker-$version$candidate.apk"
         }
+    }
+}
+
+val verifyHardenedSparseSigningIdentity by tasks.registering {
+    group = "verification"
+    description = "Check the externally supplied candidate signer against the existing hardened certificate."
+    doLast {
+        if (sparseSigningConfigured) {
+            val store = KeyStore.getInstance(
+                file(sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEYSTORE")!!),
+                sparseSigningValues.getValue("AUTOMAKER_HARDENED_STORE_PASSWORD")!!.toCharArray())
+            val certificate = store.getCertificate(sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEY_ALIAS"))
+                ?: error("The configured alias has no signing certificate.")
+            val fingerprint = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+                .joinToString("") { "%02x".format(it) }
+            require(fingerprint == installedHardenedCertificateSha256) {
+                "Candidate certificate does not match the supplied existing hardened Maker fingerprint."
+            }
+        }
+    }
+}
+tasks.configureEach {
+    if (name.startsWith("validateSigning") && name.endsWith("HardenedSparseRelease")) {
+        dependsOn(verifyHardenedSparseSigningIdentity)
     }
 }
 

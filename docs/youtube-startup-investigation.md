@@ -63,13 +63,12 @@ Both corrected paths preserve all 35,377 resource ID/configuration/type/value re
 
 Validation completed with supplied diagnostics enabled:
 
-- `:app:testAdvancedDebugUnitTest`: 11 passed, zero failures/errors/skips.
-- `:app:testStandardDebugUnitTest`: 11 passed, zero failures/errors/skips.
+- After the historical hardening integration, `:app:testAdvancedHardenedSparseReleaseUnitTest`, `:app:testAdvancedDebugUnitTest`, and `:app:testStandardDebugUnitTest`: 18 passed each, zero failures/errors/skips.
 - Desktop merge source compilation and exact-table checks: passed in the integration test.
-- `:app:compileAdvancedReleaseKotlin`: passed.
+- `:app:assembleAdvancedHardenedSparseRelease`: passed unsigned; compiled security audit passed. See the hardening integration document for signer requirements and lint results.
 - `npm test` and `git diff --check`: passed.
 
-No application was installed or launched; no merge or release publication occurred. A release APK was not signed because the established `android/release.keystore` is absent from this workspace. Release compilation is not a signed build or evidence of device acceptance.
+No application was installed or launched; no merge or release publication occurred. No candidate APK was signed. The isolated candidate uses an externally supplied existing hardened-test key, with certificate pinning and no debug fallback. Its unsigned inspection build is not evidence of device acceptance.
 
 ## Re-running tests
 
@@ -81,25 +80,16 @@ Place the five diagnostic files in a private folder under their supplied filenam
 export YOUTUBE_RESOURCE_TABLES=/absolute/path/to/diagnostic-files
 ./gradlew -Dorg.gradle.java.home=/absolute/path/to/jdk17 \
   :app:testAdvancedDebugUnitTest :app:testStandardDebugUnitTest \
-  :app:compileAdvancedReleaseKotlin
+  :app:testAdvancedHardenedSparseReleaseUnitTest
 ```
 
 Without the environment variable, the optional exact-table test skips; synthetic regressions still run. Do not commit extracted YouTube tables or private device logs.
 
 ## Next build and device validation
 
-1. Check out PR branch `codex/youtube-startup-resource-regressions-20261106`.
-2. Supply the established Maker release keystore locally at `android/release.keystore` through the existing signing configuration. Do not upload/commit it or substitute the fixture key. Use a distinct test build identifier before distribution.
-3. From `android/`, run:
-
-   ```sh
-   ./gradlew -Dorg.gradle.java.home=/absolute/path/to/jdk17 :app:assembleAdvancedRelease
-   ```
-
-   The configured output is under `android/app/build/outputs/apk/advanced/release/`. Verify its signature against the established Maker certificate before use. No signing identity was generated or changed here.
-
-4. Using that candidate, select the installed original YouTube 21.43.523 and collect all four original APKs: base, ARM64, English and xxhdpi. Select **Parked game** and **Add .patched to the package name**. Convert again from the originals and save to a new destination. Do not reconvert the already-corrupted converted APK: sorting cannot reliably recover ambiguous duplicate-ID records.
-5. Verify saved package identity, signature/alignment, original eight DEX and 37 ARM64 library hashes, and unchanged permissions/security settings. Record Maker build ID and output SHA-256.
+1. Follow [the hardened candidate's JDK 17 / Windows build and signer instructions](hardened-sparse-integration.md). Use PR branch `codex/youtube-startup-resource-regressions-20261106` and the distinct `advancedHardenedSparseRelease` target, not the normal release identity. The candidate remains unsigned unless the existing external key is supplied and its certificate matches the user-provided fingerprint. Do not generate a replacement key.
+2. Using a reviewed signed candidate, select installed original YouTube 21.43.523 and collect all four original APKs: base, ARM64, English and xxhdpi. Select **Parked game**; this candidate enforces **.patched**. Convert again from the originals and save to a new destination. Do not reconvert the already-corrupted converted APK: sorting cannot reliably recover ambiguous duplicate-ID records.
+3. Verify saved package identity, signature/alignment, original eight DEX and 37 ARM64 library hashes, and unchanged permissions/security settings. Record Maker build ID and output SHA-256. The separate Maker's Android Keystore namespace can change the converted APK signer, so an existing `.patched` copy may reject updates; preserve the original YouTube installation.
 
 Acceptance remains pending until independently checked:
 

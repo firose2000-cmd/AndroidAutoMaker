@@ -9,6 +9,7 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 object XapkPackages {
+    data class ExtractionLimits(val maxEntries: Int = 100_000, val maxBytes: Long = 4L * 1024 * 1024 * 1024)
     private val unsafeDrive = Regex("^[A-Za-z]:")
     private val PACKAGE_NAME = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
     private val SAFE_FILE = Regex("^[A-Za-z0-9._-]+$")
@@ -123,6 +124,7 @@ object XapkPackages {
         zipPath: File,
         dest: File,
         cancelled: () -> Boolean = { false },
+        limits: ExtractionLimits = ExtractionLimits(),
         onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
     ) {
         val root = dest.canonicalFile
@@ -130,9 +132,15 @@ object XapkPackages {
         val methods = methodsFile(root)
         if (methods.exists()) methods.delete()
         ZipFile(zipPath).use { zip ->
-            val entries = zip.entries().toList()
+            val entries = ArrayList<ZipEntry>()
+            val enumeration = zip.entries()
+            while (enumeration.hasMoreElements()) {
+                require(entries.size < limits.maxEntries) { "The XAPK contains too many entries." }
+                entries.add(enumeration.nextElement())
+            }
             for (entry in entries) assertSafeEntry(root, entry.name)
             val total = entries.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0L) }
+            require(total in 0..limits.maxBytes) { "The XAPK expands beyond the safe size limit." }
             var done = 0L
             onProgress(0L, total)
             val buffer = ByteArray(256 * 1024)
@@ -150,6 +158,7 @@ object XapkPackages {
                             if (cancelled()) throw CancelledConversion()
                             val read = input.read(buffer)
                             if (read < 0) break
+                            require(done <= limits.maxBytes - read) { "The XAPK expands beyond the safe size limit." }
                             output.write(buffer, 0, read)
                             done += read.toLong()
                             onProgress(done, total)

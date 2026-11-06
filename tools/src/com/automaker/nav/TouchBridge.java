@@ -74,17 +74,38 @@ public class TouchBridge extends AccessibilityService implements TouchInteractio
     @Override
     protected void onServiceConnected() {
         bridge = new WeakReference<>(this);
-        stopping = false;
-        clearExploration();
-        if (!NavigationCarService.sessionActive()) {
-            Log.i("AutoMakerNav", "Touch bridge idle");
-            stopCapturing();
-            return;
+        AccessibilityServiceInfo info = getServiceInfo();
+        if (info != null) {
+            info.eventTypes = AccessibilityEvent.TYPE_VIEW_FOCUSED | AccessibilityEvent.TYPE_VIEW_CLICKED
+                    | AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED;
+            info.packageNames = new String[] {getPackageName(),
+                    "com.google.android.projection.gearhead",
+                    "com.google.android.apps.automotive.templates.host"};
+            setServiceInfo(info);
         }
-        observing = observeTouches();
-        main.removeCallbacks(trackSession);
-        main.post(trackSession);
-        Log.i("AutoMakerNav", observing ? "Touch observe on" : "Touch layer watching");
+        startSession();
+    }
+
+    static void startSession() {
+        final TouchBridge service = bridge == null ? null : bridge.get();
+        if (service == null) return; // User has not enabled the service in Android settings.
+        service.main.post(new Runnable() {
+            @Override public void run() {
+                if (!NavigationCarService.sessionActive()) return;
+                service.stopping = false;
+                service.clearExploration();
+                service.observing = service.observeTouches();
+                service.main.removeCallbacks(service.trackSession);
+                service.main.post(service.trackSession);
+            }
+        });
+    }
+
+    static void stopSession() {
+        final TouchBridge service = bridge == null ? null : bridge.get();
+        if (service != null) service.main.post(new Runnable() {
+            @Override public void run() { service.stopCapturing(); }
+        });
     }
 
     private boolean observeTouches() {
@@ -548,7 +569,7 @@ public class TouchBridge extends AccessibilityService implements TouchInteractio
         AccessibilityNodeInfo source = event.getSource();
         if (source == null) return;
         try {
-            if (!source.isEditable()) return;
+            if (!source.isEditable() || source.isPassword()) return;
             CharSequence packageName = source.getPackageName();
             if (packageName == null || !packageName.toString().equals(getPackageName())) return;
             if (windowDisplay(source) != NavigationCarService.ownDisplay()) return;
@@ -682,10 +703,12 @@ public class TouchBridge extends AccessibilityService implements TouchInteractio
 
     @Override
     public void onInterrupt() {
+        stopCapturing();
     }
 
     @Override
     public void onDestroy() {
+        stopCapturing();
         TouchBridge current = bridge == null ? null : bridge.get();
         if (current == this) bridge = null;
         main.removeCallbacks(trackSession);

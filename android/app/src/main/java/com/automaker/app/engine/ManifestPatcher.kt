@@ -62,6 +62,23 @@ object ManifestPatcher {
         val changes = ArrayList<String>()
         val application = manifest.applicationElement
             ?: throw IllegalStateException("AndroidManifest.xml has no <application> element.")
+        if (navigation) {
+            // Do not turn an arbitrary game/video app into an in-motion navigation app.
+            // This is an admission check, not proof of safety or Android Auto certification.
+            val maps = categoryName(findAttr(application, ID_APP_CATEGORY, "appCategory")) == "maps"
+            val categories = application.recursiveElements()
+            var navigationCategory = false
+            while (categories.hasNext()) {
+                val element = categories.next()
+                if (element.equalsName("category") &&
+                    AndroidManifestBlock.getAndroidNameValue(element) in setOf(APP_MAPS, CAR_NAVIGATION)) {
+                    navigationCategory = true
+                }
+            }
+            require(maps || navigationCategory) {
+                "Navigation conversion requires an app already declared as maps or navigation. Use parked game mode for other apps."
+            }
+        }
         if (packageSuffix.isNotBlank()) renamePackage(manifest, packageSuffix, changes)
         if (removeInternalStamps(manifest) || markStandalone(application)) {
             changes.add("Removed the internal build stamp so the resigned package can be installed.")
@@ -114,7 +131,7 @@ object ManifestPatcher {
         manifest.fixAttributeNames()
         val summary = ArrayList<String>()
         summary.add(
-            if (navigation) "Prepared as navigation. The app screen stays available while driving."
+            if (navigation) "Prepared with a navigation bridge. Use only navigation apps and obey Android Auto safety restrictions."
             else "Prepared as a parked game.",
         )
         summary.addAll(changes.filter { it.startsWith("Renamed the package") })
@@ -534,8 +551,7 @@ object ManifestPatcher {
             .setValueAsBoolean(true)
         service.getOrCreateAndroidAttribute("permission", 0x01010006)
             .setValueAsString("android.permission.BIND_ACCESSIBILITY_SERVICE")
-        service.getOrCreateAndroidAttribute("isAccessibilityTool", 0x01010641)
-            .setValueAsBoolean(true)
+        // This is an optional navigation touch bridge, not a disability accessibility tool.
         service.newElement(AndroidManifest.TAG_intent_filter)
             .newElement(AndroidManifest.TAG_action)
             .getOrCreateAndroidAttribute(AndroidManifest.NAME_name, AndroidManifest.ID_name)
@@ -553,23 +569,21 @@ object ManifestPatcher {
         entry.setValueAsString(TOUCH_BRIDGE_XML)
         val document = ResXmlDocument()
         val description = appPackage(apk).getOrCreate("", "string", "automaker_touch_bridge_description")
-        description.setValueAsString("Forwards touches from the car screen.")
+        description.setValueAsString("Optional navigation touch forwarding: can read this app and Android Auto windows. Enable only if you trust the converted app. Shizuku does not enable this service automatically.")
         val root = document.getOrCreateElement("accessibility-service")
         root.getOrCreateAndroidAttribute("description", 0x01010020)
             .setTypeAndData(ValueType.REFERENCE, description.resourceId)
         root.getOrCreateAndroidAttribute("accessibilityEventTypes", 0x01010380)
-            .setTypeAndData(ValueType.HEX, -1)
+            .setTypeAndData(ValueType.HEX, 0x8009)
         root.getOrCreateAndroidAttribute("accessibilityFeedbackType", 0x01010382)
             .setTypeAndData(ValueType.HEX, 0x10)
         root.getOrCreateAndroidAttribute("accessibilityFlags", 0x01010384)
             .setTypeAndData(ValueType.HEX, 0x4052)
+        root.getOrCreateAndroidAttribute("packageNames", 0x01010381)
+            .setValueAsString("${apk.androidManifest.packageName},com.google.android.projection.gearhead,com.google.android.apps.automotive.templates.host")
         root.getOrCreateAndroidAttribute("notificationTimeout", 0x01010383)
             .setTypeAndData(ValueType.DEC, 0)
         root.getOrCreateAndroidAttribute("canRetrieveWindowContent", 0x01010385)
-            .setValueAsBoolean(true)
-        root.getOrCreateAndroidAttribute("canPerformGestures", 0x0101050d)
-            .setValueAsBoolean(true)
-        root.getOrCreateAndroidAttribute("canRequestTouchExplorationMode", 0x010103d7)
             .setValueAsBoolean(true)
         document.refreshFull()
         apk.add(ByteInputSource(document.bytes, TOUCH_BRIDGE_XML))

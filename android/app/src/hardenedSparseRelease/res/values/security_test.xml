@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AA Maker Hardened Sparse Test</string>
+    <bool name="force_side_by_side">true</bool>
+</resources>
