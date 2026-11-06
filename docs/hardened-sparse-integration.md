@@ -2,6 +2,8 @@
 
 PR #1 integrates the previous security hardening with the sparse-resource fix. It remains a draft. No merge, release publication, application installation, device validation or private-key generation was performed.
 
+Signing-policy update after `6313c39`: the isolated Advanced candidate now also accepts an explicitly pinned dedicated test certificate. The original hardened identity retains its fixed pin. See [dedicated test-key creation, signing and verification](dedicated-test-signing.md).
+
 ## Historical implementation located and reviewed
 
 Branch: [`security/hardened-advanced-1.1.15`](https://github.com/firose2000-cmd/AndroidAutoMaker/tree/security/hardened-advanced-1.1.15).
@@ -38,7 +40,7 @@ PR #1 originally branched from `master` (`fc367e3`), which explains why those ha
 | Navigation privilege | Global hidden-API exemption and allow-all host validator | No global exemption; pinned Android Auto host certificates; active session and Shizuku grant required per privileged command | Same controls and bundled asset hashes |
 | Archive/process lifecycle | Unbounded expansion and Thread.stop | 100,000 entries / 4 GiB actual expanded-byte ceiling; cooperative interruption and FGS timeout cleanup | Same controls; original sparse correction retained independently |
 | Maker test identity | Normal Advanced ID | `.adv.hardenedtestrelease` | New `.adv.hardenedsparseresourcetest`; non-debuggable; separate label and output |
-| Signing | Normal release keystore configuration | Separate test key, but fixed default path/password/alias in build configuration | No default candidate keystore, password or debug fallback; external existing key only, pinned to supplied certificate |
+| Signing | Normal release keystore configuration | Separate test key, but fixed default path/password/alias in build configuration | Explicit external credentials; dedicated expected fingerprint only for the exact isolated Advanced candidate; original identity remains pinned; no generation or debug fallback |
 | Converted package identity | Optional `.patched` | Optional `.patched` | Candidate forces `.patched` in both UI and session creation, avoiding original target ID |
 
 The compiled candidate requests exactly six permissions:
@@ -79,7 +81,7 @@ New read-only verifier and negative tests: `scripts/verify_hardened_sparse_apk.p
 - `assembleAdvancedHardenedSparseRelease`: passed, producing an **unsigned** candidate. No fallback signing key was generated.
 - Read-only compiled APK audit: passed for isolated ID, non-debuggable flag, exact permission inventory, backup/cleartext policy, guarded exports, unique provider authorities, restricted sharing, forced `.patched`, and exact hardened bridge asset.
 - Artifact policy negative tests: **8 passed**, rejecting removed permissions, old Maker package identity, debug flags, unguarded/extra exported components, broad sharing and non-side-by-side conversion.
-- Signing guard: correctly rejected the existing unrelated fixture certificate. The signed assembly task graph includes this guard before signing validation. The positive path with the actual hardened private key is **not exercised**, because that key is unavailable here.
+- Signing guard: rejects an unrelated fixture certificate without an opt-in. The later signing-policy change also verifies a fixture-signed candidate with its explicit independent fingerprint, while rejecting its use in Standard or original identities. The actual original hardened private key remains unavailable. See the dedicated-signing document for current policy tests.
 - Full candidate lint: **0 errors, 11 warnings** (5 unused resources, 2 hardcoded text, and one each for SdCardPath, ObsoleteSdkInt, MonochromeLauncherIcon, SetTextI18n).
 - Node tests and `git diff --check`: passed.
 
@@ -87,7 +89,7 @@ No known historical permission/consent control is intentionally omitted. Remaini
 
 The new Maker package has a separate Android Keystore namespace. Its converted `.patched` APK may have a different signer from a previously converted copy, even when both Maker APKs use the same certificate. An existing `.patched` installation may therefore reject an update. Preserve the original YouTube and previous Maker; do not uninstall either. Any decision about removing an old converted clone is a separate user action, not part of this build procedure.
 
-Legacy normal/debug variants keep their original signing behavior; the isolated candidate does not use those signing defaults. Do not confuse passing debug unit tests with building a non-debuggable APK. Only the candidate target below is recommended for this investigation.
+The later signing-policy change removes normal-release embedded credentials too: release signing requires explicit external credentials or remains unsigned, with the original pin enforced outside the dedicated candidate scope. Ordinary debug variants remain development variants and are not a candidate fallback. Do not confuse passing debug unit tests with building a non-debuggable APK. Only the candidate target below is recommended for this investigation.
 
 ## Safest Windows / JDK 17 build
 
@@ -106,7 +108,8 @@ $env:YOUTUBE_RESOURCE_TABLES = 'C:\Private\YouTube-diagnostics'
 
 # For the first inspection, ensure candidate-signing variables are absent.
 Remove-Item Env:AUTOMAKER_HARDENED_KEYSTORE, Env:AUTOMAKER_HARDENED_STORE_PASSWORD, `
-  Env:AUTOMAKER_HARDENED_KEY_ALIAS, Env:AUTOMAKER_HARDENED_KEY_PASSWORD -ErrorAction SilentlyContinue
+  Env:AUTOMAKER_HARDENED_KEY_ALIAS, Env:AUTOMAKER_HARDENED_KEY_PASSWORD, `
+  Env:AUTOMAKER_SPARSE_TEST_CERT_SHA256 -ErrorAction SilentlyContinue
 
 .\android\gradlew.bat -p android :app:testAdvancedHardenedSparseReleaseUnitTest `
   :app:testAdvancedDebugUnitTest :app:testStandardDebugUnitTest `
@@ -120,7 +123,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Unsigned candidate policy check failed' }
 
 If the diagnostics are unavailable, unset YOUTUBE_RESOURCE_TABLES; its optional integration test will skip while synthetic and security tests run. An unsigned APK is an inspection artifact, not an installable approved test build.
 
-For a signed candidate, reuse the **existing** external hardened-test keystore only if its private key is available. A fingerprint or certificate alone cannot sign an APK. If the key is unavailable, stop at the unsigned inspection; do not generate a replacement. Configure these four environment variables in a trusted local PowerShell session:
+Legacy-signer option: reuse the existing external hardened-test keystore if its private key is available. A certificate/fingerprint alone cannot sign an APK. Do not replace the original hardened identity's signer. If its key is unavailable, use the [dedicated key option for the isolated candidate](dedicated-test-signing.md), or stop at unsigned inspection. For the legacy-signer option, leave AUTOMAKER_SPARSE_TEST_CERT_SHA256 unset and configure these four environment variables:
 
 ```powershell
 $env:AUTOMAKER_HARDENED_KEYSTORE = 'C:\Private\existing-hardened-test.keystore'
@@ -147,7 +150,7 @@ try {
 }
 ```
 
-Passwords are transient environment values for Gradle, not command-line literals or committed files. Use the verifier's signed result to record the APK hash and exact certificate. The Gradle signing guard rejects a certificate different from `1a36b68d...42a2b4`; there is no debug fallback.
+Passwords are transient environment values for Gradle, not command-line literals or committed files. With no dedicated pin, Gradle and the verifier retain `1a36b68d...42a2b4` as the expected signer. Only the exact isolated Advanced candidate can opt into a different independent fingerprint; this cannot override the original hardened identity's pin. There is no debug fallback.
 
 Expected candidate identity:
 

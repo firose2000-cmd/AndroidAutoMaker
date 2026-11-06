@@ -68,7 +68,7 @@ Validation completed with supplied diagnostics enabled:
 - `:app:assembleAdvancedHardenedSparseRelease`: passed unsigned; compiled security audit passed. See the hardening integration document for signer requirements and lint results.
 - `npm test` and `git diff --check`: passed.
 
-No application was installed or launched; no merge or release publication occurred. No candidate APK was signed. The isolated candidate uses an externally supplied existing hardened-test key, with certificate pinning and no debug fallback. Its unsigned inspection build is not evidence of device acceptance.
+No application was installed or launched; no merge or release publication occurred. A subsequent signing-policy integration test signs only an isolated candidate with the existing fixture key and its explicit independent fingerprint; no new key is generated here. The original hardened identity remains pinned. Signed or unsigned inspection builds are not evidence of device acceptance. See [dedicated test signing](dedicated-test-signing.md).
 
 ## Re-running tests
 
@@ -87,7 +87,7 @@ Without the environment variable, the optional exact-table test skips; synthetic
 
 ## Next build and device validation
 
-1. Follow [the hardened candidate's JDK 17 / Windows build and signer instructions](hardened-sparse-integration.md). Use PR branch `codex/youtube-startup-resource-regressions-20261106` and the distinct `advancedHardenedSparseRelease` target, not the normal release identity. The candidate remains unsigned unless the existing external key is supplied and its certificate matches the user-provided fingerprint. Do not generate a replacement key.
+1. Follow [the candidate's JDK 17 / Windows dedicated-signing instructions](dedicated-test-signing.md). Use PR branch `codex/youtube-startup-resource-regressions-20261106` and the distinct `advancedHardenedSparseRelease` target. Explicitly supply external credentials and the independent expected fingerprint. Manual creation of a dedicated key is supported only for this isolated candidate; do not replace the original hardened Maker's identity or signer. The build never generates a key automatically.
 2. Using a reviewed signed candidate, select installed original YouTube 21.43.523 and collect all four original APKs: base, ARM64, English and xxhdpi. Select **Parked game**; this candidate enforces **.patched**. Convert again from the originals and save to a new destination. Do not reconvert the already-corrupted converted APK: sorting cannot reliably recover ambiguous duplicate-ID records.
 3. Verify saved package identity, signature/alignment, original eight DEX and 37 ARM64 library hashes, and unchanged permissions/security settings. Record Maker build ID and output SHA-256. The separate Maker's Android Keystore namespace can change the converted APK signer, so an existing `.patched` copy may reject updates; preserve the original YouTube installation.
 

@@ -1,0 +1,11 @@
+{
+  "original_hardened": {
+    "application_id": "com.automaker.app.adv.hardenedtestrelease",
+    "certificate_sha256": "1a36b68d51fe4bc945848ad3b0e82558447a9670399dc5a138f58fd9d142a2b4"
+  },
+  "dedicated_test": {
+    "variant": "advancedHardenedSparseRelease",
+    "application_id": "com.automaker.app.adv.hardenedsparseresourcetest",
+    "fingerprint_environment_variable": "AUTOMAKER_SPARSE_TEST_CERT_SHA256"
+  }
+}

@@ -8,9 +8,10 @@ from pathlib import Path
 import re
 import subprocess
 import zipfile
+from signing_policy import DEDICATED, ORIGINAL, expected_certificate, verify_certificate
 
-PACKAGE = "com.automaker.app.adv.hardenedsparseresourcetest"
-CERTIFICATE = "1a36b68d51fe4bc945848ad3b0e82558447a9670399dc5a138f58fd9d142a2b4"
+PACKAGE = DEDICATED["application_id"]
+CERTIFICATE = ORIGINAL["certificate_sha256"]
 BRIDGE_SHA256 = "e88b1391fbafa7f590ed25a61e4702a38257d48e85e5eba73c3108d13d4dfd32"
 PERMISSIONS = {
     "android.permission.POST_NOTIFICATIONS", "android.permission.FOREGROUND_SERVICE",
@@ -58,11 +59,13 @@ def boolean(raw):
     raise ValueError("Cannot determine compiled boolean: " + raw)
 
 
-def inspect(badging, permissions, manifest, paths, resources):
-    require(re.search(r"^package: name='" + re.escape(PACKAGE) + r"'", badging, re.M), "Wrong candidate package")
+def inspect(badging, permissions, manifest, paths, resources, package=PACKAGE):
+    require(package in (PACKAGE, ORIGINAL["application_id"]), "Unsupported hardened identity")
+    require(re.search(r"^package: name='" + re.escape(package) + r"'", badging, re.M), "Wrong candidate package")
     require("application-debuggable" not in badging, "Candidate is debuggable")
     requested = set(re.findall(r"uses-permission: name='([^']+)'", permissions))
-    require(requested == PERMISSIONS, "Unexpected compiled permission inventory: " + str(sorted(requested)))
+    expected_permissions = {p.replace(PACKAGE, package) for p in PERMISSIONS}
+    require(requested == expected_permissions, "Unexpected compiled permission inventory: " + str(sorted(requested)))
     nodes = elements(manifest)
     app = next(node["attrs"] for node in nodes if node["tag"] == "application")
     require(not boolean(app.get("android:debuggable", "false")), "Manifest enables debugging")
@@ -71,10 +74,10 @@ def inspect(badging, permissions, manifest, paths, resources):
     require("android:dataExtractionRules" in app, "Missing transfer exclusions")
     providers = {string(n["attrs"].get("android:name", "")): n["attrs"] for n in nodes if n["tag"] == "provider"}
     file_provider = providers["androidx.core.content.FileProvider"]
-    require(string(file_provider.get("android:authorities", "")) == PACKAGE + ".files", "FileProvider authority collision")
+    require(string(file_provider.get("android:authorities", "")) == package + ".files", "FileProvider authority collision")
     require(not boolean(file_provider.get("android:exported", "false")), "Exported FileProvider")
     shizuku = providers["rikka.shizuku.ShizukuProvider"]
-    require(string(shizuku.get("android:authorities", "")) == PACKAGE + ".shizuku", "Shizuku authority collision")
+    require(string(shizuku.get("android:authorities", "")) == package + ".shizuku", "Shizuku authority collision")
     require(string(shizuku.get("android:permission", "")) == "android.permission.INTERACT_ACROSS_USERS_FULL", "Unguarded Shizuku provider")
     allowed_exports = {
         "com.automaker.app.MainActivity": None,
@@ -94,10 +97,16 @@ def inspect(badging, permissions, manifest, paths, resources):
     path_nodes = [n for n in elements(paths) if n["tag"] != "paths"]
     require(len(path_nodes) == 1 and path_nodes[0]["tag"] == "cache-path", "Overbroad FileProvider paths")
     require(string(path_nodes[0]["attrs"].get("path", "")) == "install-share/", "Overbroad cache sharing")
-    require(re.search(r"bool/force_side_by_side\s*\n\s*\(\) true", resources), "Candidate must force side-by-side conversion")
+    if package == PACKAGE:
+        require(re.search(r"bool/force_side_by_side\s*\n\s*\(\) true", resources), "Candidate must force side-by-side conversion")
 
 
-def verify(apk, unsigned=False):
+def verify(apk, unsigned=False, identity="candidate", expected_cert=None):
+    require(identity in ("candidate", "existing-hardened"), "Unsupported identity")
+    package = PACKAGE if identity == "candidate" else ORIGINAL["application_id"]
+    variant = DEDICATED["variant"] if identity == "candidate" else "advancedHardenedRelease"
+    expected_cert = expected_cert if expected_cert is not None else os.environ.get(DEDICATED["fingerprint_environment_variable"])
+    expected = expected_certificate(package, variant, expected_cert)
     sdk = Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
     suffix = ".exe" if os.name == "nt" else ""
     candidates = [p for p in (sdk / "build-tools").iterdir() if (p / ("aapt2" + suffix)).is_file()]
@@ -112,7 +121,7 @@ def verify(apk, unsigned=False):
     require(paths is not None, "Cannot resolve compiled FileProvider paths XML")
     inspect(run(aapt, "dump", "badging", apk), run(aapt, "dump", "permissions", apk),
             run(aapt, "dump", "xmltree", apk, "--file", "AndroidManifest.xml"),
-            run(aapt, "dump", "xmltree", apk, "--file", paths[1]), resources)
+            run(aapt, "dump", "xmltree", apk, "--file", paths[1]), resources, package=package)
     with zipfile.ZipFile(apk) as archive:
         require(hashlib.sha256(archive.read("assets/navigation.dex")).hexdigest() == BRIDGE_SHA256,
                 "Bundled navigation bridge differs from reviewed hardened history")
@@ -121,17 +130,19 @@ def verify(apk, unsigned=False):
         java = Path(os.environ["JAVA_HOME"]) / "bin" / ("java" + suffix)
         signature = run(java, "-jar", tools / "lib/apksigner.jar", "verify", "--verbose", "--print-certs", apk)
         certificates = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-f]{64})", signature)
-        require(certificates == [CERTIFICATE], "Signature or signing certificate mismatch")
-        certificate = certificates[0]
-    return {"application_id": PACKAGE, "apk_sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
-            "debuggable": False, "permissions": sorted(PERMISSIONS),
+        require(len(certificates) == 1, "Expected exactly one verified APK signer")
+        certificate = verify_certificate(package, variant, certificates[0], expected_cert)
+    return {"application_id": package, "apk_sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
+            "debuggable": False, "permissions": sorted(p.replace(PACKAGE, package) for p in PERMISSIONS),
             "signature_verification": "NOT PERFORMED (explicit unsigned inspection)" if unsigned else "passed",
-            "signing_certificate_sha256": certificate, "device_validation": "not performed"}
+            "signing_certificate_sha256": certificate, "expected_certificate_sha256": expected, "device_validation": "not performed"}
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("apk", type=Path)
     parser.add_argument("--unsigned", action="store_true", help="Static inspection only; does not certify a signed/installable APK")
+    parser.add_argument("--identity", choices=("candidate", "existing-hardened"), default="candidate")
+    parser.add_argument("--expected-cert-sha256", help="Out-of-band expected candidate signer; cannot override the original hardened pin")
     arguments = parser.parse_args()
-    print(json.dumps(verify(arguments.apk, arguments.unsigned), indent=2))
+    print(json.dumps(verify(arguments.apk, arguments.unsigned, arguments.identity, arguments.expected_cert_sha256), indent=2))

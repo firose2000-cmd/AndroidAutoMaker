@@ -43,6 +43,17 @@ class ArtifactPolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.inspect()
 
+    def test_existing_identity_requires_explicit_selection(self):
+        existing = audit.ORIGINAL["application_id"]
+        audit.inspect(self.badging.replace(audit.PACKAGE, existing),
+                      self.permissions.replace(audit.PACKAGE, existing),
+                      self.manifest.replace(audit.PACKAGE, existing), self.paths, "", package=existing)
+
+    def test_verifier_cannot_override_original_signer_pin(self):
+        from pathlib import Path
+        with self.assertRaisesRegex(ValueError, "cannot override"):
+            audit.verify(Path("not-opened.apk"), identity="existing-hardened", expected_cert="ab" * 32)
+
     def test_rejects_debuggable_from_either_compiled_source(self):
         for badging, manifest in ((self.badging + "\napplication-debuggable", self.manifest),
                                   (self.badging, self.manifest.replace("  E: application", "  E: application\n    A: android:debuggable(0x09)=true"))):
