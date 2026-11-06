@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.Environment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -18,12 +17,10 @@ object InstalledApps {
         val splitCount: Int,
     )
 
-    class StorageAccessRequired : Exception("Allow all files access to include expansion, asset, and media files.")
-
     fun list(context: Context): List<ListedApp> {
         val manager = context.packageManager
         return installedApplications(manager).mapNotNull { info ->
-            if (info.packageName == context.packageName) return@mapNotNull null
+            if (info.packageName == context.packageName || !isLaunchable(manager, info.packageName)) return@mapNotNull null
             val source = info.sourceDir ?: return@mapNotNull null
             if (!File(source).isFile) return@mapNotNull null
             val system = info.flags and ApplicationInfo.FLAG_SYSTEM != 0
@@ -41,8 +38,11 @@ object InstalledApps {
         }.sortedBy { it.label.lowercase() }
     }
 
-    fun export(context: Context, packageName: String, destZip: File, allowMissingStorage: Boolean): List<String> {
+    fun export(context: Context, packageName: String, destZip: File): List<String> {
         val manager = context.packageManager
+        require(packageName != context.packageName && isLaunchable(manager, packageName)) {
+            "Select a visible launchable application."
+        }
         val info = if (Build.VERSION.SDK_INT >= 33) {
             manager.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
         } else {
@@ -70,7 +70,7 @@ object InstalledApps {
                 splits.put(JSONObject().put("file", "apks/${stored.name}").put("id", stored.nameWithoutExtension))
             }
             notes.add(if (splits.length() == 1) "Copied the installed APK." else "Copied ${splits.length()} APKs, including splits.")
-            notes.addAll(copyExternal(root, packageName, allowMissingStorage))
+            notes.add("Only APKs and splits were copied. Select an XAPK document to include expansion files; private app data is never exported.")
             val label = manager.getApplicationLabel(info)?.toString().orEmpty().ifBlank { packageName }
             val manifest = JSONObject()
             manifest.put("package_name", packageName)
@@ -83,53 +83,6 @@ object InstalledApps {
         }
         return notes
     }
-
-    private fun copyExternal(root: File, packageName: String, allowMissingStorage: Boolean): List<String> {
-        val storage = Environment.getExternalStorageDirectory()
-        val notes = ArrayList<String>()
-        val trees = listOf(
-            "Android/obb/$packageName" to "expansion",
-            "Android/data/$packageName/files" to "media",
-        )
-        var blocked = false
-        var copied = 0
-        for ((relative, kind) in trees) {
-            val source = File(storage, relative)
-            if (!source.exists()) continue
-            if (!source.canRead()) {
-                blocked = true
-                continue
-            }
-            val count = copyTree(source, File(root, relative))
-            if (count > 0) {
-                copied += count
-                notes.add(if (kind == "expansion") "Included $count expansion file${plural(count)}." else "Included $count media or asset file${plural(count)}.")
-            }
-        }
-        if (blocked && Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            if (!allowMissingStorage) throw StorageAccessRequired()
-            notes.add("Expansion and media files could not be read. Allow all files access and choose the app again to include them.")
-        }
-        if (copied == 0 && !blocked) notes.add("No expansion or media files were stored with this app.")
-        return notes
-    }
-
-    private fun copyTree(source: File, dest: File): Int {
-        var count = 0
-        fun walk(from: File, to: File) {
-            if (from.isDirectory) {
-                for (child in from.listFiles().orEmpty()) walk(child, File(to, child.name))
-                return
-            }
-            to.parentFile?.mkdirs()
-            from.copyTo(to, overwrite = true)
-            count += 1
-        }
-        walk(source, dest)
-        return count
-    }
-
-    private fun plural(count: Int) = if (count == 1) "" else "s"
 
     private fun safeFile(name: String): String {
         val cleaned = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
@@ -148,10 +101,12 @@ object InstalledApps {
 
     @Suppress("DEPRECATION")
     private fun installedApplications(manager: PackageManager): List<ApplicationInfo> {
-        return if (Build.VERSION.SDK_INT >= 33) {
-            manager.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val matches = if (Build.VERSION.SDK_INT >= 33) {
+            manager.queryIntentActivities(launcher, PackageManager.ResolveInfoFlags.of(0))
         } else {
-            manager.getInstalledApplications(0)
+            manager.queryIntentActivities(launcher, 0)
         }
+        return matches.mapNotNull { it.activityInfo?.applicationInfo }.distinctBy { it.packageName }
     }
 }

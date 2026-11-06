@@ -23,12 +23,6 @@ object BundleInstall {
         return staged
     }
 
-    fun sessionCreateCommand(sdkInt: Int): String {
-        val command = StringBuilder("pm install-create -r -i com.android.vending")
-        if (sdkInt >= 34) command.append(" --originating-uri https://play.google.com/store/apps")
-        return command.toString()
-    }
-
     fun parseSessionId(output: String): Int? {
         val match = Regex("\\[(-?\\d+)]").find(output)
             ?: Regex("session\\D+(-?\\d+)", RegexOption.IGNORE_CASE).find(output)

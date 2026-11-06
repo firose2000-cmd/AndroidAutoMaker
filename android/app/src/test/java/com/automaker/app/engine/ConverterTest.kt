@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.reandroid.apk.ApkModule
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.file.Files
@@ -13,10 +14,60 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 class ConverterTest {
-    private val sdk = File(System.getenv("LOCALAPPDATA"), "Android/Sdk")
-    private val java = File("C:/Program Files/Java/jdk-17/bin/java.exe")
+    private val sdk = File(System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME")
+        ?: File(System.getenv("LOCALAPPDATA"), "Android/Sdk").path)
+    private val exe = if (System.getProperty("os.name").orEmpty().startsWith("Windows")) ".exe" else ""
+    private val java = File(System.getProperty("java.home"), "bin/java$exe")
+    private fun buildTool(name: String): File = File(sdk, "build-tools").listFiles().orEmpty()
+        .sortedByDescending { it.name }.map { File(it, "$name$exe") }.first { it.isFile }
     private val project = File("..").canonicalFile.parentFile
     private val keystore = File("src/test/resources/signing.p12")
+
+    @Test(timeout = 240000)
+    fun exportedApkContainsTheReportedRenamedPackage() {
+        val directory = Files.createTempDirectory("renamed-export").toFile()
+        try {
+            val sample = buildSample(directory, buildTool("aapt2"), File(sdk, "platforms/android-36/android.jar"))
+            val converter = PackageConverter(PackageConverter.signerFrom(keystore))
+            val keyboardDex = File(project, "tools/keyboard.dex").readBytes()
+            val bundle = File(directory, "installed")
+            bundle.mkdirs()
+            sample.copyTo(File(bundle, "base.apk"))
+            File(bundle, "manifest.json").writeText("""{"package_name":"com.example.plainapp","split_apks":[{"id":"base","file":"base.apk"}]}""")
+            val xapk = File(directory, "installed.xapk")
+            zipDirectory(bundle, xapk)
+            for (input in listOf(sample, xapk)) {
+                val output = File(directory, "${input.extension}/signed.apk")
+                output.parentFile!!.mkdirs()
+                val result = if (input.extension == "xapk") {
+                    converter.convertXapk(input, output, {}, {}, keyboardDex = keyboardDex, packageSuffix = PackageNames.SUFFIX)
+                } else {
+                    converter.convertApk(input, output, {}, {}, keyboardDex = keyboardDex, packageSuffix = PackageNames.SUFFIX)
+                }
+                // Save APK streams the session's signed.apk to the chosen document.
+                val exported = File(output.parentFile, "PlainApp-android-auto.apk")
+                output.inputStream().use { source -> exported.outputStream().use { source.copyTo(it) } }
+                assertEquals("com.example.plainapp.patched", result.packageName)
+                ApkModule.loadApkFile(exported).use { apk ->
+                    assertEquals("exported ${input.extension}", result.packageName, apk.androidManifest.packageName)
+                }
+                val tree = dumpXmlTree(exported, "AndroidManifest.xml")
+                assertTrue(tree.lineSequence().any { it.trimStart().startsWith("A: package=") &&
+                    it.contains("\"com.example.plainapp.patched\"") })
+                val decoded = File(output.parentFile, "decoded")
+                run(java.absolutePath, listOf("-jar", File(project, "tools/apktool.jar").absolutePath,
+                    "d", "-f", "-s", "-p", File(project, "tools/framework").absolutePath,
+                    "-o", decoded.absolutePath, exported.absolutePath))
+                val xml = File(decoded, "AndroidManifest.xml").readText()
+                assertTrue(Regex("<manifest\\b[^>]*\\bpackage=\"com\\.example\\.plainapp\\.patched\"").containsMatchIn(xml))
+                assertTrue(xml.contains("android.intent.category.CAR_LAUNCHER"))
+                assertTrue(xml.contains("android:appCategory=\"game\""))
+                assertFalse(xml.contains("distractionOptimized"))
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
 
     @Test(timeout = 180000)
     fun alignsNativeLibrariesTo16Kb() {
@@ -65,9 +116,9 @@ class ConverterTest {
 
     @Test(timeout = 240000)
     fun convertsAnApkAndAnXapk() {
-        val aapt2 = File(sdk, "build-tools/36.0.0/aapt2.exe")
+        val aapt2 = buildTool("aapt2")
         val androidJar = File(sdk, "platforms/android-36/android.jar")
-        val zipalign = File(sdk, "build-tools/36.0.0/zipalign.exe")
+        val zipalign = buildTool("zipalign")
         val apktool = File(project, "tools/apktool.jar")
         assertTrue("aapt2 is required", aapt2.isFile)
         assertTrue("android.jar is required", androidJar.isFile)
@@ -133,8 +184,13 @@ class ConverterTest {
         val archDex = File(project, "tools/arch.dex").readBytes()
         val activityDex = File(project, "tools/activity.dex").readBytes()
         val shizukuDex = File(project, "tools/shizuku.dex").readBytes()
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            converter.convertApk(sample, File(directory, "rejected.apk"), {}, {}, kind = "navigation")
+        }
+        val navigationSource = File(directory, "navigation-source").apply { mkdirs() }
+        val navigationSample = buildSample(navigationSource, aapt2, androidJar, category = "maps")
         val navigationResult = converter.convertApk(
-            sample,
+            navigationSample,
             navigation,
             {},
             {},
@@ -160,12 +216,16 @@ class ConverterTest {
             ),
         )
         val navigationManifest = File(navigationDecoded, "AndroidManifest.xml").readText()
-        assertTrue(navigationResult.changes.any { it.contains("Prepared as navigation") })
+        assertTrue(navigationResult.changes.any { it.contains("navigation bridge") })
         assertTrue(navigationManifest.contains("com.automaker.nav.NavigationCarService"))
         assertTrue(navigationManifest.contains("com.automaker.nav.TouchBridge"))
         assertTrue(navigationManifest.contains("android.accessibilityservice"))
         val touchXml = File(navigationDecoded, "res/xml/automaker_touch_bridge.xml").readText()
         assertTrue(touchXml.contains("flagSendMotionEvents") || touchXml.contains("accessibilityFlags"))
+        assertTrue(touchXml.contains("com.example.plainapp,com.google.android.projection.gearhead"))
+        assertFalse(touchXml.contains("canPerformGestures"))
+        assertFalse(touchXml.contains("canRequestTouchExplorationMode"))
+        assertFalse(navigationManifest.contains("android:isAccessibilityTool=\"true\""))
         assertTrue(navigationManifest.contains("androidx.car.app.CarAppService"))
         assertTrue(navigationManifest.contains("androidx.car.app.category.NAVIGATION"))
         assertTrue(
@@ -198,6 +258,8 @@ class ConverterTest {
             assertTrue(markers.any { it.contains("Lrikka/shizuku/ShizukuProvider;") })
         }
 
+        assertTrue(com.android.apksig.ApkVerifier.Builder(output).build().verify().isVerified)
+        assertTrue(com.android.apksig.ApkVerifier.Builder(navigation).build().verify().isVerified)
         val again = converter.convertApk(output, File(directory, "out/again.apk"), {}, {})
         assertTrue(again.changes.any { it.contains("Prepared as a parked game") })
 
@@ -221,9 +283,16 @@ class ConverterTest {
         )
         val xapk = File(directory, "sample.xapk")
         zipDirectory(xapkDir, xapk)
-        val xapkOut = File(directory, "out/signed.apk")
+        val installParts = com.automaker.app.install.BundleInstall.prepare(xapk, "com.example.plainapp")
+        assertEquals(2, installParts.apks.size)
+        assertEquals(1, installParts.obbs.size)
+        assertEquals("com.example.plainapp", installParts.obbs.single().packageName)
+        assertTrue(com.automaker.app.install.BundleInstall.stageBase(xapk, installParts.apks.first()).isFile)
+        assertEquals(42, com.automaker.app.install.BundleInstall.parseSessionId("Success: created install session [42]"))
+        val xapkOut = File(directory, "out/xapk-signed.apk")
         val packed = converter.convertXapk(xapk, xapkOut, {}, {})
         assertEquals("apk", packed.format)
+        assertTrue(com.android.apksig.ApkVerifier.Builder(xapkOut).build().verify().isVerified)
         assertTrue(packed.changes.any { it.contains("Prepared as a parked game") })
         ZipFile(xapkOut).use { zip ->
             assertTrue(zip.getEntry("AndroidManifest.xml") != null)
@@ -231,7 +300,7 @@ class ConverterTest {
         }
     }
 
-    private fun buildSample(directory: File, aapt2: File, androidJar: File): File {
+    private fun buildSample(directory: File, aapt2: File, androidJar: File, category: String = "video"): File {
         val manifest = File(directory, "AndroidManifest.xml")
         manifest.writeText(
             """
@@ -242,7 +311,7 @@ class ConverterTest {
                 android:versionName="1.0">
                 <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34"/>
                 <uses-feature android:name="android.hardware.type.automotive" android:required="true"/>
-                <application android:label="@string/app_name" android:appCategory="video" android:isGame="false" android:hasCode="false">
+                <application android:label="@string/app_name" android:appCategory="$category" android:isGame="false" android:hasCode="false">
                     <activity android:name="com.example.plainapp.MainActivity" android:exported="false">
                         <intent-filter>
                             <action android:name="android.intent.action.MAIN"/>
@@ -370,7 +439,7 @@ class ConverterTest {
     }
 
     private fun dumpXmlTree(apk: File, name: String): String {
-        val aapt = File(sdk, "build-tools/36.0.0/aapt.exe")
+        val aapt = buildTool("aapt")
         val process = ProcessBuilder(aapt.absolutePath, "dump", "xmltree", apk.absolutePath, name)
             .redirectErrorStream(true)
             .start()

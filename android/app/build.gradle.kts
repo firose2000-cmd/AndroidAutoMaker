@@ -1,6 +1,31 @@
+import java.security.KeyStore
+import java.security.MessageDigest
+import groovy.json.JsonSlurper
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// No default keystore, embedded credentials or debug-signing fallback for this candidate.
+val sparseSigningVariables = listOf("AUTOMAKER_HARDENED_KEYSTORE", "AUTOMAKER_HARDENED_STORE_PASSWORD",
+    "AUTOMAKER_HARDENED_KEY_ALIAS", "AUTOMAKER_HARDENED_KEY_PASSWORD")
+val sparseSigningValues = sparseSigningVariables.associateWith { providers.environmentVariable(it).orNull }
+val sparseSigningConfigured = sparseSigningValues.values.all { !it.isNullOrBlank() }
+require(sparseSigningValues.values.all { it == null } || sparseSigningConfigured) {
+    "Set all four AUTOMAKER_HARDENED signing variables, or unset all four for an unsigned candidate."
+}
+val signerPolicy = JsonSlurper().parse(rootProject.file("../config/signing-policy.json")) as Map<*, *>
+val originalSignerPolicy = signerPolicy["original_hardened"] as Map<*, *>
+val dedicatedSignerPolicy = signerPolicy["dedicated_test"] as Map<*, *>
+val installedHardenedCertificateSha256 = originalSignerPolicy["certificate_sha256"] as String
+val dedicatedCertificateSha256 = providers.environmentVariable(
+    dedicatedSignerPolicy["fingerprint_environment_variable"] as String).orNull?.let {
+    it.trim().replace(":", "").lowercase().also { fingerprint ->
+        require(fingerprint.matches(Regex("[0-9a-f]{64}"))) {
+            "AUTOMAKER_SPARSE_TEST_CERT_SHA256 must be a SHA-256 certificate fingerprint."
+        }
+    }
 }
 
 android {
@@ -19,11 +44,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file("release.keystore")
-            storePassword = "automaker"
-            keyAlias = "automaker"
-            keyPassword = "automaker"
+        if (sparseSigningConfigured) {
+            create("hardenedSparseTest") {
+                storeFile = file(sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEYSTORE")!!)
+                storePassword = sparseSigningValues.getValue("AUTOMAKER_HARDENED_STORE_PASSWORD")
+                keyAlias = sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEY_ALIAS")
+                keyPassword = sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEY_PASSWORD")
+            }
         }
     }
 
@@ -42,7 +69,16 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (sparseSigningConfigured) signingConfigs.getByName("hardenedSparseTest") else null
+        }
+        create("hardenedSparseRelease") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isJniDebuggable = false
+            signingConfig = if (sparseSigningConfigured) signingConfigs.getByName("hardenedSparseTest") else null
+            applicationIdSuffix = ".hardenedsparseresourcetest"
+            versionNameSuffix = "-hardened-sparse-test"
+            matchingFallbacks += listOf("release")
         }
     }
 
@@ -86,11 +122,50 @@ android {
     }
 
     applicationVariants.configureEach {
+        val variantName = name
+        val variantApplicationId = applicationId
+        val variantSigning = signingConfig
+        val usesExternalSigning = sparseSigningConfigured && variantSigning?.storeFile?.canonicalFile ==
+            file(sparseSigningValues.getValue("AUTOMAKER_HARDENED_KEYSTORE")!!).canonicalFile
+        if (buildType.name == "hardenedSparseRelease" || variantApplicationId == originalSignerPolicy["application_id"] ||
+            usesExternalSigning) {
+            val capitalizedVariant = variantName.replaceFirstChar { it.uppercaseChar() }
+            val verifySigner = tasks.register("verify${capitalizedVariant}SigningIdentity") {
+                group = "verification"
+                description = "Verify explicit external signing credentials for $variantName."
+                doLast {
+                    if (variantSigning != null) {
+                        val dedicatedScope = variantName == dedicatedSignerPolicy["variant"] &&
+                            variantApplicationId == dedicatedSignerPolicy["application_id"]
+                        require(dedicatedScope || dedicatedCertificateSha256 == null ||
+                            dedicatedCertificateSha256 == installedHardenedCertificateSha256) {
+                            "A dedicated test certificate is allowed only for advancedHardenedSparseRelease and its isolated application ID."
+                        }
+                        val expected = if (dedicatedScope) dedicatedCertificateSha256
+                            ?: installedHardenedCertificateSha256 else installedHardenedCertificateSha256
+                        val store = KeyStore.getInstance(
+                            requireNotNull(variantSigning.storeFile) { "Explicit signing keystore required." },
+                            requireNotNull(variantSigning.storePassword) { "Explicit store password required." }.toCharArray())
+                        val certificate = store.getCertificate(requireNotNull(variantSigning.keyAlias) { "Explicit signing alias required." })
+                            ?: error("The configured alias has no signing certificate.")
+                        val fingerprint = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+                            .joinToString("") { "%02x".format(it) }
+                        require(fingerprint == expected) {
+                            "Signing certificate does not match the expected fingerprint for $variantName / $variantApplicationId."
+                        }
+                    }
+                }
+            }
+            tasks.configureEach {
+                if (name == "validateSigning$capitalizedVariant") dependsOn(verifySigner)
+            }
+        }
         val advanced = flavorName == "advanced"
         val version = versionName
         outputs.configureEach {
+            val candidate = if (buildType.name == "hardenedSparseRelease") "-HardenedSparseTest" else ""
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
-                if (advanced) "AndroidAutoMaker-Advanced-$version.apk" else "AndroidAutoMaker-$version.apk"
+                if (advanced) "AndroidAutoMaker-Advanced-$version$candidate.apk" else "AndroidAutoMaker-$version$candidate.apk"
         }
     }
 }

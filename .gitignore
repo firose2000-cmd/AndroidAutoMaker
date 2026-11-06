@@ -20,6 +20,8 @@ tools/merge/
 *.jks
 *.keystore
 *.class
+__pycache__/
+android/.kotlin/
 dist/
 android/.gradle/
 android/**/build/
