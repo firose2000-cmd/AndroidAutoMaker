@@ -65,6 +65,8 @@ def inspect(badging, permissions, manifest, paths, resources, package=PACKAGE):
     require("application-debuggable" not in badging, "Candidate is debuggable")
     requested = set(re.findall(r"uses-permission: name='([^']+)'", permissions))
     expected_permissions = {p.replace(PACKAGE, package) for p in PERMISSIONS}
+    if package == PACKAGE:
+        expected_permissions.discard("moe.shizuku.manager.permission.API_V23")
     require(requested == expected_permissions, "Unexpected compiled permission inventory: " + str(sorted(requested)))
     nodes = elements(manifest)
     app = next(node["attrs"] for node in nodes if node["tag"] == "application")
@@ -76,14 +78,19 @@ def inspect(badging, permissions, manifest, paths, resources, package=PACKAGE):
     file_provider = providers["androidx.core.content.FileProvider"]
     require(string(file_provider.get("android:authorities", "")) == package + ".files", "FileProvider authority collision")
     require(not boolean(file_provider.get("android:exported", "false")), "Exported FileProvider")
-    shizuku = providers["rikka.shizuku.ShizukuProvider"]
-    require(string(shizuku.get("android:authorities", "")) == package + ".shizuku", "Shizuku authority collision")
-    require(string(shizuku.get("android:permission", "")) == "android.permission.INTERACT_ACROSS_USERS_FULL", "Unguarded Shizuku provider")
+    if package == PACKAGE:
+        require("rikka.shizuku.ShizukuProvider" not in providers, "Shizuku provider must be absent from reduced-privilege candidate")
+    else:
+        shizuku = providers["rikka.shizuku.ShizukuProvider"]
+        require(string(shizuku.get("android:authorities", "")) == package + ".shizuku", "Shizuku authority collision")
+        require(string(shizuku.get("android:permission", "")) == "android.permission.INTERACT_ACROSS_USERS_FULL", "Unguarded Shizuku provider")
     allowed_exports = {
         "com.automaker.app.MainActivity": None,
-        "rikka.shizuku.ShizukuProvider": "android.permission.INTERACT_ACROSS_USERS_FULL",
+
         "androidx.profileinstaller.ProfileInstallReceiver": "android.permission.DUMP",
     }
+    if package != PACKAGE:
+        allowed_exports["rikka.shizuku.ShizukuProvider"] = "android.permission.INTERACT_ACROSS_USERS_FULL"
     for node in nodes:
         if node["tag"] not in ("activity", "activity-alias", "service", "receiver", "provider"):
             continue
@@ -132,8 +139,11 @@ def verify(apk, unsigned=False, identity="candidate", expected_cert=None):
         certificates = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-f]{64})", signature)
         require(len(certificates) == 1, "Expected exactly one verified APK signer")
         certificate = verify_certificate(package, variant, certificates[0], expected_cert)
+    reported_permissions = {p.replace(PACKAGE, package) for p in PERMISSIONS}
+    if package == PACKAGE:
+        reported_permissions.discard("moe.shizuku.manager.permission.API_V23")
     return {"application_id": package, "apk_sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
-            "debuggable": False, "permissions": sorted(p.replace(PACKAGE, package) for p in PERMISSIONS),
+            "debuggable": False, "permissions": sorted(reported_permissions),
             "signature_verification": "NOT PERFORMED (explicit unsigned inspection)" if unsigned else "passed",
             "signing_certificate_sha256": certificate, "expected_certificate_sha256": expected, "device_validation": "not performed"}
 
