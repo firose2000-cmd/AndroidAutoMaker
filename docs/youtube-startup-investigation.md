@@ -1,90 +1,127 @@
-# YouTube 21.43.523 startup investigation
+# YouTube 21.43.523 sparse-resource startup failure
 
-Status: the reported crash is confirmed in the supplied log; its conversion-related cause is not yet established. This change adds regression coverage and investigation instructions, not a verified YouTube crash fix.
+Status: resource-index corruption is reproduced from the supplied tables and corrected in both merge implementations. Automated tests pass; YouTube launch, playback and parked-only Android Auto behavior still require device validation. Keep the PR in draft until that validation is complete.
 
-## Confirmed evidence
+## Root cause and affected references
 
-The supplied log contains six main-thread crashes for `com.google.android.youtube.patched`, with device-reported timestamps on `11-06` from `12:12:36.587` to `12:15:17.402`. The log format does not include a year or timezone. Each identifies the patched process explicitly and fails starting `com.google.android.apps.youtube.app.watchwhile.MainActivity`:
+The fresh supplied log identifies six main-thread crashes in `com.google.android.youtube.patched` on device-reported `11-06`, from `12:12:36.587` to `12:15:17.402`, starting `com.google.android.apps.youtube.app.watchwhile.MainActivity`. It fails in `TypedArray.getColor`, called by `Activity.onApplyThemeResource`, with an unresolved resource reference (`type=0x1`). The log has no timezone/year field.
+
+The supplied binary manifest independently confirms the patched package, main activity theme `0x7f150921` (`Theme.YouTube.Home`, matching the crash log), and absence of `android:debuggable`.
+
+The defect is in serialized sparse resource indexes, not the manifest package or a changed color literal. A sparse type stores `(entry ID, offset)` pairs for populated IDs only. Android binary-searches those pairs, requiring strictly ascending IDs. The resource library can enumerate the same malformed table using linear lookup, concealing the failure from semantic-only comparisons.
+
+| Supplied resource table | Sparse chunks | Unsorted/duplicate indexes |
+| --- | ---: | ---: |
+| Original base | 128 | 0 |
+| Original English | 2 | 0 |
+| Original xxhdpi | 6 | 0 |
+| Converted | 135 | 135 |
+
+The original tables' union has 35,377 resource ID/configuration records. The old converted table retains their decoded names/types/values, but also has 133 phantom ID-zero/configuration records. Its indexes are invalid even though a linear semantic comparison appears reassuring.
+
+A specific affected light-theme chain is:
 
 ```text
-Process: com.google.android.youtube.patched
-java.lang.RuntimeException: Unable to start activity
-Caused by: java.lang.UnsupportedOperationException:
-  Can't convert value at index 1 to color: type=0x1
-at android.content.res.TypedArray.getColor(TypedArray.java:542)
-at android.app.Activity.onApplyThemeResource(Activity.java:5808)
-at android.view.ContextThemeWrapper.initializeTheme(ContextThemeWrapper.java:240)
+Theme.YouTube.Home (0x7f150921)
+  ... inherited android:colorPrimary (0x01010435)
+  -> ?0x7f0401fb
+  -> ?0x7f040b68
+  -> @color/yt_dark_blue (0x7f060dfd)
+  -> @color/yt_ref_color_constants_baseline_blue_dark_blue (0x7f060e9c)
+  -> #ff065fd4
 ```
 
-`0x1` denotes a resource reference. The failure occurs during theme application, before the main activity finishes starting. The log names the YouTube theme hierarchy, including `Theme.YouTube.Home` at `0x7f150921`, but does not disclose the unresolved reference's data/target resource ID or the exact attribute represented by index 1 on this Motorola framework. Index 1 is a TypedArray index, not resource ID 1. The retained `com.google.android.youtube` resource-table namespace in theme diagnostics is not by itself evidence that the manifest rename failed.
+Both color IDs resolve by binary search in the original default color index (2,505 populated pairs). Both are present but cannot be found by binary search in the supplied converted index (incorrectly padded to 4,454 pairs, with descending IDs followed by duplicate zeros). This demonstrates a broken theme reference chain. The log does not separately disclose the reference data or Motorola's precise internal mapping for TypedArray index 1; the final runtime correlation remains part of device validation.
 
-The user reports matching original DEX/native hashes, the additional keyboard-provider DEX, and a larger converted resources.arsc. Those comparisons have not been independently repeated against the exact artifacts here. Table size alone cannot establish corruption: configuration consolidation, string pooling, sparse/dense entry encoding and entry padding can alter it without changing resource semantics.
+Two operations explain the defect:
 
-The converted APK attachment exceeds the available transfer tool's 32 MiB limit. No substitute YouTube build was used. The four exact original APKs are also needed for an artifact-level comparison.
+1. ARSCLib 1.3.8 sparse merge insertion can produce descending entry-ID indexes.
+2. `repairResourceTable` applies dense-ID-space padding to sparse lists. Its `ensureEntriesCount(needed)` creates duplicate ID-zero sparse records instead of dense holes.
 
-## Pipeline reviewed
+Table byte growth alone was insufficient evidence; the supplied tables establish the malformed layout directly. No theme override or original executable-code change is needed for this correction.
 
-Installed-app selection exports the base and split APKs to an XAPK in `InstalledApps.export`. `SessionRepository` forwards `.patched` to `PackageConverter.convertXapk`. Conversion loads the APK modules, merges base first, copies feature manifest declarations, removes split-install metadata, and repairs resource entry counts before writing `merged.apk`. `convertApk` then patches the manifest, writes the APK, adds the parked-game keyboard DEX, aligns, signs and verifies it with apksig. The parked-game path does not compile the original DEX or native libraries and does not use apktool to recompile resources. It does parse and serialize resources through ARSCLib.
+## Correction and changed files
 
-`repairResourceTable` expands entry arrays and refreshes the table. The overlay-header cleanup may also rewrite resources.arsc. Both merit inspection using the exact tables, but neither has been established as the cause. Resource remapping, missing configurations, theme values and manifest-selected themes remain candidates; a resource-library upgrade or a theme override would be speculative at this stage.
+Both implementations now leave sparse lists compact and explicitly reorder entry objects together with their offset/ID objects by ascending ID. Dense-table count repair remains in place:
 
-The session package name comes from the in-memory manifest. Save APK streams the session's signed.apk to the chosen document. There is no final production assertion comparing that signed APK's manifest package with the reported package. The export regression tests now check this relationship.
+- `android/app/src/main/java/com/automaker/app/engine/PackageConverter.kt`
+- `tools/src/com/automaker/merge/MergeXapk.java`
 
-## Regression coverage
+The change affects resource serialization only. It does not alter permissions, signing policy, provider exposure, Accessibility/overlay/Shizuku grants or vehicle-motion restrictions. The original YouTube installation was not accessed or modified. Uploaded diagnostics were read; analysis copies and generated shells are separate scratch files.
 
-`SplitResourceIntegrityTest` builds a four-APK synthetic fixture: base, ARM64 ABI, English and xxhdpi configuration splits. It converts both normal and sparse/name-collapsed/deduplicated tables, with package renaming both enabled and disabled. It compares:
+`SplitResourceIntegrityTest.kt` adds binary-layout checks, genuinely sparse fixtures and an optional exact-table integration test. `ConverterTest.kt` contains the preceding exported-package regression and portable SDK/JDK discovery. This document records the evidence and validation procedure.
 
-- Original resource IDs, configuration values and symbolic theme/color references using independent Android SDK aapt2 output.
-- Raw value types, numeric reference targets, style parent IDs and bag attribute IDs, including when resource names are collapsed.
-- Compiled layout XML and its theme attribute references.
-- SHA-256 hashes for original DEX and opaque native-library fixture payloads.
-- Final APK signatures, manifest identity, SDK/ABI metadata, removal of split requirements and distinct provider authorities after renaming.
-- Unchanged requested permission declarations, non-exported KeyboardStay and retained parked-game flags.
+## Regression evidence
 
-`ConverterTest.exportedApkContainsTheReportedRenamedPackage` separately reopens an export-equivalent streamed copy and checks its package with ARSCLib, aapt and apktool.
+The synthetic tests now force sparse encoding, assert that sparse chunks actually exist, and independently check serialized ID ordering and entry bounds. Multiple gapped night-mode entries cover both padding and reordering. On old production code the regression failed with `previous=2 id=0` in the signed output. It passes with the correction.
 
-These are static tests. The synthetic native payload is an opaque byte fixture, not an executable library, and the synthetic app is not installed. Passing these tests does not establish YouTube installation, launch or playback compatibility. No production security code, permissions, grants, motion restrictions or signing policy changed.
+Existing checks cover resource IDs/configurations, numeric reference targets, style parents, bag attribute IDs, compiled XML, original fixture DEX/native hashes, package/authority renaming, signatures, SDK/ABI metadata, permissions and parked-game settings. The preceding export test checks the saved-copy package using ARSCLib, aapt and apktool.
 
-Run from `android/` with JDK 17, SDK platform 36, build-tools 35 or newer, ANDROID_HOME or ANDROID_SDK_ROOT, and the existing test keystore/tools:
+The optional `suppliedYouTubeTablesRemainSearchableAfterConversion` test reads the five diagnostics from `YOUTUBE_RESOURCE_TABLES`. It confirms that the supplied converted table fails the binary-index check, constructs diagnostic APK shells from the exact original tables and supplied manifest, and runs both the real Android conversion/signing path and desktop merge CLI. These shells lack original executable code and resource files: never install them.
+
+Both corrected paths preserve all 35,377 resource ID/configuration/type/value records, with no extra or missing records, and produce 135 valid consolidated sparse indexes. Android output signature verification passes. Both diagnostic paths produce a 2,432,740-byte resource table. This is not a regenerated complete YouTube APK.
+
+Validation completed with supplied diagnostics enabled:
+
+- `:app:testAdvancedDebugUnitTest`: 11 passed, zero failures/errors/skips.
+- `:app:testStandardDebugUnitTest`: 11 passed, zero failures/errors/skips.
+- Desktop merge source compilation and exact-table checks: passed in the integration test.
+- `:app:compileAdvancedReleaseKotlin`: passed.
+- `npm test` and `git diff --check`: passed.
+
+No application was installed or launched; no merge or release publication occurred. A release APK was not signed because the established `android/release.keystore` is absent from this workspace. Release compilation is not a signed build or evidence of device acceptance.
+
+## Re-running tests
+
+Use JDK 17, SDK platform 36 and Android build-tools 35 or newer. Set ANDROID_HOME or ANDROID_SDK_ROOT. Existing tests require apktool, fixture DEX assets and the repository's test-only signing.p12. The optional test additionally compiles desktop source with the current JDK.
+
+Place the five diagnostic files in a private folder under their supplied filenames. From `android/`:
 
 ```sh
-./gradlew :app:testAdvancedDebugUnitTest :app:testStandardDebugUnitTest
+export YOUTUBE_RESOURCE_TABLES=/absolute/path/to/diagnostic-files
+./gradlew -Dorg.gradle.java.home=/absolute/path/to/jdk17 \
+  :app:testAdvancedDebugUnitTest :app:testStandardDebugUnitTest \
+  :app:compileAdvancedReleaseKotlin
 ```
 
-The repository's Gradle properties contain a Windows-specific JDK path; override `-Dorg.gradle.java.home=/path/to/jdk17` when necessary. The test executable paths now use the selected SDK and current JDK. From the repository root, also run `npm test` and `git diff --check`.
+Without the environment variable, the optional exact-table test skips; synthetic regressions still run. Do not commit extracted YouTube tables or private device logs.
 
-## Exact-artifact investigation still required
+## Next build and device validation
 
-Provide the four original APKs and exact converted APK through accessible paths/links, recording SHA-256 for each. If large-file transfer is unavailable, initially extract and upload the original base/English/xxhdpi resources.arsc files and converted resources.arsc under distinct names, plus binary AndroidManifest.xml from the base and converted APK. These smaller entries permit direct table and theme comparisons without rebuilding anything.
+1. Check out PR branch `codex/youtube-startup-resource-regressions-20261106`.
+2. Supply the established Maker release keystore locally at `android/release.keystore` through the existing signing configuration. Do not upload/commit it or substitute the fixture key. Use a distinct test build identifier before distribution.
+3. From `android/`, run:
 
-1. Compare resource IDs, types, values and all configurations across the union of original APKs and the converted table. Inspect the logged theme hierarchy and follow color-reference chains. Check parent/attribute IDs and framework references against the actual Motorola Android build.
-2. Compare before merge, after merge/entry-count repair, after manifest patching and after signing. Identify the first stage where the affected reference/configuration changes. Record rather than infer changes from byte lengths.
-3. Use controlled conversions with and without `.patched` and with the same complete split set. Preserve original code/native hashes, and compare manifest-selected themes and authorities. Do not use missing splits as a substitute for the actual input.
-4. Implement a correction only after a failing artifact-backed regression demonstrates the defect. Preserve original resource IDs where original executable code references them. Re-run signature, alignment, identity, permission and payload checks.
+   ```sh
+   ./gradlew -Dorg.gradle.java.home=/absolute/path/to/jdk17 :app:assembleAdvancedRelease
+   ```
 
-For a new timestamped device log, with the patched app already installed, capture only a fresh launch window. These commands launch the existing patched app; they do not install or grant permissions:
+   The configured output is under `android/app/build/outputs/apk/advanced/release/`. Verify its signature against the established Maker certificate before use. No signing identity was generated or changed here.
 
-```sh
-adb shell date
-adb shell getprop ro.build.fingerprint
-adb shell am force-stop com.google.android.youtube.patched
-adb logcat -b main -b system -b crash -v threadtime -T 1 > youtube-fresh-logcat.txt
+4. Using that candidate, select the installed original YouTube 21.43.523 and collect all four original APKs: base, ARM64, English and xxhdpi. Select **Parked game** and **Add .patched to the package name**. Convert again from the originals and save to a new destination. Do not reconvert the already-corrupted converted APK: sorting cannot reliably recover ambiguous duplicate-ID records.
+5. Verify saved package identity, signature/alignment, original eight DEX and 37 ARM64 library hashes, and unchanged permissions/security settings. Record Maker build ID and output SHA-256.
+
+Acceptance remains pending until independently checked:
+
+- Patched APK installs alongside the unchanged original.
+- Repeated cold starts in light/dark themes succeed without the color exception.
+- Phone playback, seeking, audio, rotation and background/foreground transitions work; retain a fresh timestamped stability log.
+- No sensitive permission or automatic Accessibility/overlay/Shizuku authorization is added.
+- Separately on the actual Android Auto head unit, check launcher visibility and playback while safely parked. Validate the existing motion gate through a safe controlled check; do not bypass it or enable video while driving.
+
+## Diagnostic provenance
+
+SHA-256 values for supplied files; the files themselves are not committed:
+
+```text
+Converted_AndroidManifest.xml
+e92e7473d01ae563d8cf4d28fb70da1e571503ea43674841ac8e875eb66f69d7
+Original_Base_resources.arsc
+ae540f31533444eb96153ec485d94462a23d90db2a5c87511ca2c132c96f09d8
+Original_English_resources.arsc
+ece1e9eae8641cea6e2af0254ca75d6eadbd2e87fb180e841d98e141c3f38f4c
+Original_XXHDPI_resources.arsc
+592f76c93f35ad106a1524caeb1ec2c8a79c838e3c65ce0a6ee725fe3ef76da1
+Converted_resources.arsc
+e69115c12f18211ccc3a296f4987da6c404b0ca349327195820f356d8ccedda8
 ```
-
-While logcat runs, tap the patched YouTube icon, then stop capture after the failure. Retain the matching `Process:` line and entire exception chain. Logcat may contain unrelated private information; share the relevant launch window rather than a full device-history dump.
-
-## Generating and validating a candidate after a justified fix
-
-No signed test release is warranted yet: this patch changes tests and documentation only and cannot improve YouTube startup. A future candidate should retain the established release signing configuration and use a distinct test build identifier. Do not distribute signing keys or replace them with the fixture keystore.
-
-For that future candidate, select the installed original YouTube 21.43.523, ensure all four original splits are collected, choose **Parked game**, enable **Add .patched to the package name**, convert and save to a new destination. Before installation, verify the saved manifest says `com.google.android.youtube.patched`, confirm distinct provider authorities, verify the signature/alignment and compare original DEX/native hashes. Record the candidate Maker build ID and output SHA-256.
-
-Validation remains pending until performed on the phone and vehicle:
-
-- Both original and patched YouTube remain installed under distinct package names; the original is unchanged.
-- Patched YouTube cold-launches repeatedly in light/dark themes without the logged color exception.
-- Core playback, seeking, audio, rotation and background/foreground transitions work on the phone; retain a timestamped stability log.
-- Requested permissions and security restrictions match the hardened baseline. No Accessibility/overlay/Shizuku grant is added or performed automatically.
-- Separately, on the actual Android Auto head unit while safely parked, check launcher visibility and parked playback. Confirm the existing motion gate remains effective through a safe, controlled validation; do not enable video while driving or bypass the gate.
-
-Until those device checks pass, the acceptance criteria are unmet and the YouTube startup issue remains open.
