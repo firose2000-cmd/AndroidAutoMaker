@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.reandroid.apk.ApkModule
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.file.Files
@@ -13,10 +14,60 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 class ConverterTest {
-    private val sdk = File(System.getenv("LOCALAPPDATA"), "Android/Sdk")
-    private val java = File("C:/Program Files/Java/jdk-17/bin/java.exe")
+    private val sdk = File(System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME")
+        ?: File(System.getenv("LOCALAPPDATA"), "Android/Sdk").path)
+    private val exe = if (System.getProperty("os.name").orEmpty().startsWith("Windows")) ".exe" else ""
+    private val java = File(System.getProperty("java.home"), "bin/java$exe")
+    private fun buildTool(name: String): File = File(sdk, "build-tools").listFiles().orEmpty()
+        .sortedByDescending { it.name }.map { File(it, "$name$exe") }.first { it.isFile }
     private val project = File("..").canonicalFile.parentFile
     private val keystore = File("src/test/resources/signing.p12")
+
+    @Test(timeout = 240000)
+    fun exportedApkContainsTheReportedRenamedPackage() {
+        val directory = Files.createTempDirectory("renamed-export").toFile()
+        try {
+            val sample = buildSample(directory, buildTool("aapt2"), File(sdk, "platforms/android-36/android.jar"))
+            val converter = PackageConverter(PackageConverter.signerFrom(keystore))
+            val keyboardDex = File(project, "tools/keyboard.dex").readBytes()
+            val bundle = File(directory, "installed")
+            bundle.mkdirs()
+            sample.copyTo(File(bundle, "base.apk"))
+            File(bundle, "manifest.json").writeText("""{"package_name":"com.example.plainapp","split_apks":[{"id":"base","file":"base.apk"}]}""")
+            val xapk = File(directory, "installed.xapk")
+            zipDirectory(bundle, xapk)
+            for (input in listOf(sample, xapk)) {
+                val output = File(directory, "${input.extension}/signed.apk")
+                output.parentFile!!.mkdirs()
+                val result = if (input.extension == "xapk") {
+                    converter.convertXapk(input, output, {}, {}, keyboardDex = keyboardDex, packageSuffix = PackageNames.SUFFIX)
+                } else {
+                    converter.convertApk(input, output, {}, {}, keyboardDex = keyboardDex, packageSuffix = PackageNames.SUFFIX)
+                }
+                // Save APK streams the session's signed.apk to the chosen document.
+                val exported = File(output.parentFile, "PlainApp-android-auto.apk")
+                output.inputStream().use { source -> exported.outputStream().use { source.copyTo(it) } }
+                assertEquals("com.example.plainapp.patched", result.packageName)
+                ApkModule.loadApkFile(exported).use { apk ->
+                    assertEquals("exported ${input.extension}", result.packageName, apk.androidManifest.packageName)
+                }
+                val tree = dumpXmlTree(exported, "AndroidManifest.xml")
+                assertTrue(tree.lineSequence().any { it.trimStart().startsWith("A: package=") &&
+                    it.contains("\"com.example.plainapp.patched\"") })
+                val decoded = File(output.parentFile, "decoded")
+                run(java.absolutePath, listOf("-jar", File(project, "tools/apktool.jar").absolutePath,
+                    "d", "-f", "-s", "-p", File(project, "tools/framework").absolutePath,
+                    "-o", decoded.absolutePath, exported.absolutePath))
+                val xml = File(decoded, "AndroidManifest.xml").readText()
+                assertTrue(Regex("<manifest\\b[^>]*\\bpackage=\"com\\.example\\.plainapp\\.patched\"").containsMatchIn(xml))
+                assertTrue(xml.contains("android.intent.category.CAR_LAUNCHER"))
+                assertTrue(xml.contains("android:appCategory=\"game\""))
+                assertFalse(xml.contains("distractionOptimized"))
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
 
     @Test(timeout = 180000)
     fun alignsNativeLibrariesTo16Kb() {
@@ -65,9 +116,9 @@ class ConverterTest {
 
     @Test(timeout = 240000)
     fun convertsAnApkAndAnXapk() {
-        val aapt2 = File(sdk, "build-tools/36.0.0/aapt2.exe")
+        val aapt2 = buildTool("aapt2")
         val androidJar = File(sdk, "platforms/android-36/android.jar")
-        val zipalign = File(sdk, "build-tools/36.0.0/zipalign.exe")
+        val zipalign = buildTool("zipalign")
         val apktool = File(project, "tools/apktool.jar")
         assertTrue("aapt2 is required", aapt2.isFile)
         assertTrue("android.jar is required", androidJar.isFile)
@@ -370,7 +421,7 @@ class ConverterTest {
     }
 
     private fun dumpXmlTree(apk: File, name: String): String {
-        val aapt = File(sdk, "build-tools/36.0.0/aapt.exe")
+        val aapt = buildTool("aapt")
         val process = ProcessBuilder(aapt.absolutePath, "dump", "xmltree", apk.absolutePath, name)
             .redirectErrorStream(true)
             .start()
