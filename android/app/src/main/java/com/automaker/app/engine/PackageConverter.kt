@@ -490,6 +490,9 @@ class PackageConverter(private val signerFor: (packageName: String) -> ApkSigner
                         val entries = type.entryArray
                         val offsets = entries.offsetReferenceList
                         val order = (0 until entries.size()).filter { entries.get(it) != null }.sortedBy { offsets.get(it).idx }
+                        check(order.map { offsets.get(it).idx }.distinct().size == order.size) {
+                            "Duplicate populated sparse resource IDs after merge; aborting conversion."
+                        }
                         val sortedEntries = order.map { entries.get(it) }.toTypedArray()
                         val sortedOffsets = order.map { offsets.get(it) }.toTypedArray()
                         entries.setElements(sortedEntries)
