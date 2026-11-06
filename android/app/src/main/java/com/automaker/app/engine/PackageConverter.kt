@@ -1,5 +1,6 @@
 package com.automaker.app.engine
 
+import com.automaker.app.BuildConfig
 import com.android.apksig.ApkSigner
 import com.android.apksig.ApkVerifier
 import com.reandroid.apk.APKLogger
@@ -741,7 +742,9 @@ class PackageConverter(private val signerFor: (packageName: String) -> ApkSigner
         val lifecycleToAdd = lifecycleDex?.takeUnless { zipContains(apkFile, "Landroidx/lifecycle/LifecycleRegistry;") }
         val archToAdd = archDex?.takeUnless { zipContains(apkFile, "Landroidx/arch/core/internal/FastSafeIterableMap;") }
         val activityToAdd = activityDex?.takeUnless { zipContains(apkFile, "Landroidx/activity/OnBackPressedDispatcher;") }
-        val shizukuToAdd = shizukuDex?.takeUnless { zipContains(apkFile, "Lrikka/shizuku/ShizukuProvider;") }
+        val shizukuToAdd = if (BuildConfig.ENABLE_PRIVILEGED_INSTALL) {
+            shizukuDex?.takeUnless { zipContains(apkFile, "Lrikka/shizuku/ShizukuProvider;") }
+        } else null
         if (navigationToAdd != null) addStoredDex(apkFile, navigationToAdd)
         if (carToAdd != null) addStoredDex(apkFile, carToAdd)
         if (lifecycleToAdd != null) addStoredDex(apkFile, lifecycleToAdd)
