@@ -489,7 +489,7 @@ class PackageConverter(private val signerFor: (packageName: String) -> ApkSigner
                         // Android binary-searches this index, so keep it compact and ascending.
                         val entries = type.entryArray
                         val offsets = entries.offsetReferenceList
-                        val order = (0 until entries.size()).sortedBy { offsets.get(it).idx }
+                        val order = (0 until entries.size()).filter { entries.get(it) != null }.sortedBy { offsets.get(it).idx }
                         val sortedEntries = order.map { entries.get(it) }.toTypedArray()
                         val sortedOffsets = order.map { offsets.get(it) }.toTypedArray()
                         entries.setElements(sortedEntries)
